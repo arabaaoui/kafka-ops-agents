@@ -45,23 +45,23 @@ sequenceDiagram
     participant R as Remediation
     participant P as Replay x3
 
-    PI->>PI: 500 valid + 50 invalid invoices
-    PI->>D: facturation topic seeded
+    PI->>PI: seed 500 valid and 50 invalid invoices
+    PI->>D: facturation topic ready
     D->>M: get_consumer_lag facturation
-    M-->>D: consumer group state
+    M-->>D: lag detected
     D->>M: read_messages facturation
     M-->>D: sampled messages
-    D->>D: pattern-match siret=null
-    D->>R: incident: siret null, 50 messages
+    D->>D: pattern match siret null
+    D->>R: incident siret null 50 messages
     R->>R: apply SKILL.md kafka-streams-filter
-    R->>R: generate Kafka Streams filter + DLT
-    R->>P: replay-task: topic=facturation, count=50
-    loop each faulty message, up to 3 attempts
-        P->>P: enrich_message - 80% success
+    R->>R: generate Kafka Streams filter and DLT
+    R->>P: replay task for facturation
+    loop each faulty message up to 3 attempts
+        P->>P: enrich message 80% success
         alt enriched
             P->>P: publish to facturation-corrige
         else 3 failed attempts
-            P->>P: dead-letter to facturation-dead-letter
+            P->>P: dead letter to facturation-dead-letter
         end
     end
 ```
