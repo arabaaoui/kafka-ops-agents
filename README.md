@@ -78,9 +78,9 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    PI["Problem Injector<br/>one-shot: 500 valid + 50 invalid<br/>(no LLM)"]
+    PI["Problem Injector<br/>one-shot: 500 valid + 50 invalid<br/>no LLM"]
 
-    subgraph KAFKA["Apache Kafka 4.2.1 (KRaft)"]
+    subgraph KAFKA["Apache Kafka 4.2.1 KRaft"]
         direction LR
         T_FACT[("facturation")]
         T_ALERT[("alerts")]
@@ -98,27 +98,27 @@ flowchart TB
     subgraph REM["Remediation Agent"]
         REM_SKILL["SKILL.md<br/>kafka-streams-filter"]
         REM_ADK["google-adk Agent<br/>REMEDIATION_LLM"]
-        REM_SKILL -.->|injected into instruction| REM_ADK
+        REM_SKILL -.-> REM_ADK
     end
 
-    subgraph REPLAY["Replay Agent x3 (KIP-932)"]
-        REPLAY_ADK["google-adk Agent<br/>REPLAY_LLM (optional)"]
+    subgraph REPLAY["Replay Agent x3 KIP-932"]
+        REPLAY_ADK["google-adk Agent<br/>REPLAY_LLM optional"]
         REPLAY_DET["Deterministic fallback<br/>simulated 80% success"]
     end
 
-    MCP["MCP Confluent :3000"]
-    UI["Kafka UI :8081"]
+    MCP["MCP Confluent port 3000"]
+    UI["Kafka UI port 8081"]
 
     PI -->|produce| T_FACT
-    T_ALERT -->|poll / self-trigger| DIAG
-    DIAG -->|get_consumer_lag / read_messages| MCP
+    T_ALERT -->|poll or self-trigger| DIAG
+    DIAG -->|get_consumer_lag and read_messages| MCP
     MCP -->|queries| T_FACT
     DIAG -->|diagnose| T_INC
     T_INC -->|poll| REM
-    REM -->|generate_filter + deploy| T_AUDIT
+    REM -->|generate_filter and deploy| T_AUDIT
     REM -->|replay task| T_TASK
-    T_TASK -->|ShareGroupClient.poll| REPLAY
-    REPLAY -->|enrich + publish| T_CORR
+    T_TASK -->|ShareGroupClient poll| REPLAY
+    REPLAY -->|enrich and publish| T_CORR
     REPLAY -->|3 failed attempts| T_DLQ
     KAFKA -.->|observe| UI
 ```
