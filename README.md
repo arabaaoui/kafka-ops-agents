@@ -78,49 +78,48 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    PI["Problem Injector<br/>one shot 500 valid plus 50 invalid<br/>no LLM"]
+    PI["Problem Injector - one shot seed, no LLM"]
 
     subgraph KAFKA["Apache Kafka 4.2.1 KRaft"]
-        direction LR
-        T_FACT[("facturation")]
-        T_ALERT[("alerts")]
-        T_INC[("incidents")]
-        T_TASK[("replay tasks")]
-        T_CORR[("facturation corrige")]
-        T_DLQ[("facturation dead letter")]
-        T_AUDIT[("audit")]
+        T_FACT["facturation"]
+        T_ALERT["alerts"]
+        T_INC["incidents"]
+        T_TASK["replay tasks"]
+        T_CORR["facturation corrigee"]
+        T_DLQ["facturation dead letter"]
+        T_AUDIT["audit"]
     end
 
     subgraph DIAG["Diagnostic Agent"]
-        DIAG_ADK["google adk Agent<br/>DIAGNOSTIC LLM"]
+        DIAG_ADK["google adk Agent - Diagnostic LLM"]
     end
 
     subgraph REM["Remediation Agent"]
-        REM_SKILL["SKILL.md<br/>kafka streams filter"]
-        REM_ADK["google adk Agent<br/>REMEDIATION LLM"]
-        REM_SKILL -.-> REM_ADK
+        REM_SKILL["SKILL.md kafka streams filter"]
+        REM_ADK["google adk Agent - Remediation LLM"]
+        REM_SKILL --> REM_ADK
     end
 
-    subgraph REPLAY["Replay Agent x3 KIP 932"]
-        REPLAY_ADK["google adk Agent<br/>REPLAY LLM optional"]
-        REPLAY_DET["Deterministic fallback<br/>simulated 80% success"]
+    subgraph REPLAY["Replay Agent x3 - KIP 932"]
+        REPLAY_ADK["google adk Agent - Replay LLM optional"]
+        REPLAY_DET["Deterministic fallback - simulated 80 percent success"]
     end
 
     MCP["MCP Confluent port 3000"]
     UI["Kafka UI port 8081"]
 
-    PI -->|produce| T_FACT
-    T_ALERT -->|poll or self trigger| DIAG
-    DIAG -->|get consumer lag and read messages| MCP
-    MCP -->|queries| T_FACT
-    DIAG -->|diagnose| T_INC
-    T_INC -->|poll| REM
-    REM -->|generate filter and deploy| T_AUDIT
-    REM -->|replay task| T_TASK
-    T_TASK -->|ShareGroupClient poll| REPLAY
-    REPLAY -->|enrich and publish| T_CORR
-    REPLAY -->|3 failed attempts| T_DLQ
-    KAFKA -.->|observe| UI
+    PI --> T_FACT
+    T_ALERT --> DIAG_ADK
+    DIAG_ADK --> MCP
+    MCP --> T_FACT
+    DIAG_ADK --> T_INC
+    T_INC --> REM_ADK
+    REM_ADK --> T_AUDIT
+    REM_ADK --> T_TASK
+    T_TASK --> REPLAY_ADK
+    REPLAY_ADK --> T_CORR
+    REPLAY_ADK --> T_DLQ
+    T_FACT --> UI
 ```
 
 **Pipeline flow:**
