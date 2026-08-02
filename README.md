@@ -7,9 +7,9 @@
 
 A proof-of-concept demonstrating how **Apache Kafka can serve as a native platform for AI agents that operate Kafka itself** — three real [google-adk](https://pypi.org/project/google-adk/) agents, each free to run a different LLM provider, cooperating over Kafka topics to diagnose a broken consumer group, generate a code fix, and replay the affected messages. No human in the loop.
 
-> Article: [Kafka as an Agent-Native Platform — blog.dolizone.com](https://blog.dolizone.com)
+> Article: [Quand un agent IA diagnostique, corrige et rejoue votre Kafka — tout seul](https://blog.dolizone.com/kafka-plateforme-agent-native/)
 
-This is the second PoC in the series. The [first PoC](https://github.com/arabaaoui/kafka-for-agents) used Kafka as **coordination infrastructure** for business agents (retail replenishment). This one flips the target: Kafka is the **thing being operated on** — the agents diagnose and repair Kafka itself. MCP stops being an auxiliary tool and becomes the primary interface; Agent Skills generate Kafka code instead of business rules; KIP-932 does enrichment replay instead of homogeneous task distribution.
+This is the second PoC in the series. The [first PoC](https://github.com/arabaaoui/kafka-for-agents) used Kafka as **coordination infrastructure** for business agents (retail replenishment). This one flips the target: Kafka is the **thing being operated on** — the agents diagnose and repair Kafka itself. MCP stops being an auxiliary tool and becomes the primary interface; Agent Skills generate Kafka code instead of business rules; KIP-932 does enrichment replay instead of homogeneous task distribution. The first PoC's companion article: [Kafka remplace vos middlewares — une supply chain de 200 magasins pilotée par 3 agents IA](https://blog.dolizone.com/kafka-agents-supply-chain/).
 
 ---
 
@@ -92,38 +92,35 @@ flowchart TB
     end
 
     subgraph DIAG["Diagnostic Agent"]
-        direction TB
-        DIAG_ADK["google-adk Agent<br/>DIAGNOSTIC_LLM_*"]
+        DIAG_ADK["google-adk Agent<br/>DIAGNOSTIC_LLM"]
     end
 
     subgraph REM["Remediation Agent"]
-        direction TB
-        REM_SKILL["SKILL.md<br/>kafka-streams-filter<br/>(loaded once at startup)"]
-        REM_ADK["google-adk Agent<br/>REMEDIATION_LLM_*"]
-        REM_SKILL -.injected into instruction.-> REM_ADK
+        REM_SKILL["SKILL.md<br/>kafka-streams-filter"]
+        REM_ADK["google-adk Agent<br/>REMEDIATION_LLM"]
+        REM_SKILL -.->|injected into instruction| REM_ADK
     end
 
-    subgraph REPLAY["Replay Agent ×3 (KIP-932 share group)"]
-        direction TB
-        REPLAY_ADK["google-adk Agent<br/>REPLAY_LLM_* (optional)"]
+    subgraph REPLAY["Replay Agent x3 (KIP-932)"]
+        REPLAY_ADK["google-adk Agent<br/>REPLAY_LLM (optional)"]
         REPLAY_DET["Deterministic fallback<br/>simulated 80% success"]
     end
 
-    MCP["MCP Confluent<br/>:3000"]
-    UI["Kafka UI<br/>:8081"]
+    MCP["MCP Confluent :3000"]
+    UI["Kafka UI :8081"]
 
     PI -->|produce| T_FACT
     T_ALERT -->|poll / self-trigger| DIAG
-    DIAG <-.get_consumer_lag / read_messages.-> MCP
-    MCP -.queries.-> T_FACT
-    DIAG -->|diagnose tool| T_INC
+    DIAG -->|get_consumer_lag / read_messages| MCP
+    MCP -->|queries| T_FACT
+    DIAG -->|diagnose| T_INC
     T_INC -->|poll| REM
-    REM -->|generate_filter + deploy_filter| T_AUDIT
+    REM -->|generate_filter + deploy| T_AUDIT
     REM -->|replay task| T_TASK
     T_TASK -->|ShareGroupClient.poll| REPLAY
-    REPLAY -.enrich_message / publish_corrected.-> T_CORR
-    REPLAY -.after 3 failed attempts.-> T_DLQ
-    KAFKA -.observe.-> UI
+    REPLAY -->|enrich + publish| T_CORR
+    REPLAY -->|3 failed attempts| T_DLQ
+    KAFKA -.->|observe| UI
 ```
 
 **Pipeline flow:**
@@ -222,8 +219,8 @@ Unlike PoC 1, where share groups distributed **homogeneous** execution tasks, he
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/arabaaoui/kafka-agentic-ops.git
-cd kafka-agentic-ops
+git clone https://github.com/arabaaoui/kafka-ops-agents.git
+cd kafka-ops-agents
 
 # 2. Create your environment file
 cp .env.example .env
