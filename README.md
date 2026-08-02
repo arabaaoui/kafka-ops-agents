@@ -21,29 +21,29 @@ A legacy producer has a bug: some invoices published to the `facturation` topic 
 
 ```mermaid
 flowchart TB
-    BUG["🐛 Legacy producer bug<br/>50/550 invoices: siret=null"]
+    BUG["Legacy producer bug<br/>50/550 invoices: siret=null"]
 
-    BUG --> LAG["📉 Consumer group 'facturation'<br/>falls behind"]
+    BUG --> LAG["Consumer group facturation<br/>falls behind"]
 
-    LAG --> DIAG["🔍 DIAGNOSTIC<br/>MCP: get_consumer_lag + read_messages<br/>→ cause: siret null, 50 messages affected"]
+    LAG --> DIAG["DIAGNOSTIC<br/>MCP: get_consumer_lag + read_messages<br/>cause: siret null, 50 messages affected"]
 
-    DIAG --> REM["🛠️ REMEDIATION<br/>SKILL.md kafka-streams-filter<br/>→ generates a Kafka Streams filter() topology"]
+    DIAG --> REM["REMEDIATION<br/>SKILL.md kafka-streams-filter<br/>generates a Kafka Streams filter topology"]
 
-    REM --> REPLAY["🔁 REPLAY (KIP-932 share group ×3)<br/>enrich_message() → publish_corrected()"]
+    REM --> REPLAY["REPLAY (KIP-932 share group x3)<br/>enrich_message then publish_corrected"]
 
-    REPLAY --> FIXED["✅ facturation-corrige<br/>enriched invoices"]
-    REPLAY --> DLQ["☠️ facturation-dead-letter<br/>unrecoverable after 3 attempts"]
+    REPLAY --> FIXED["facturation-corrige<br/>enriched invoices"]
+    REPLAY --> DLQ["facturation-dead-letter<br/>unrecoverable after 3 attempts"]
 ```
 
 ### Functional Walkthrough
 
 ```mermaid
 sequenceDiagram
-    participant PI as 🧪 Problem Injector
-    participant D as 🔍 Diagnostic
+    participant PI as Problem Injector
+    participant D as Diagnostic
     participant M as MCP Confluent
-    participant R as 🛠️ Remediation
-    participant P as 🔁 Replay ×3
+    participant R as Remediation
+    participant P as Replay x3
 
     PI->>PI: 500 valid + 50 invalid (siret=null) invoices
     PI->>D: facturation topic seeded
@@ -52,16 +52,16 @@ sequenceDiagram
     D->>M: read_messages("facturation", 0, 600)
     M-->>D: sampled messages
     D->>D: pattern-match siret=null
-    D->>R: incidents: cause="siret null", messages_affected=50
+    D->>R: incidents: cause=siret null, 50 messages affected
     R->>R: apply SKILL.md kafka-streams-filter
-    R->>R: generate_filter() — Kafka Streams topology + DLT
-    R->>P: replay-tasks: topic=facturation, filter="siret is null", count=50
+    R->>R: generate_filter() - Kafka Streams topology + DLT
+    R->>P: replay-tasks: topic=facturation, count=50
     loop each faulty message, up to 3 attempts
-        P->>P: enrich_message() — 80% simulated success
+        P->>P: enrich_message() - 80% simulated success
         alt enriched
-            P->>P: publish_corrected() → facturation-corrige
+            P->>P: publish_corrected() to facturation-corrige
         else 3 failed attempts
-            P->>P: DEAD-LETTER → facturation-dead-letter
+            P->>P: DEAD-LETTER to facturation-dead-letter
         end
     end
 ```
