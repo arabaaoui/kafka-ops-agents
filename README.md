@@ -7,9 +7,9 @@
 
 A proof-of-concept demonstrating how **Apache Kafka can serve as a native platform for AI agents that operate Kafka itself** — three real [google-adk](https://pypi.org/project/google-adk/) agents, each free to run a different LLM provider, cooperating over Kafka topics to diagnose a broken consumer group, generate a code fix, and replay the affected messages. No human in the loop.
 
-> Article: [Quand un agent IA diagnostique, corrige et rejoue votre Kafka — tout seul](https://blog.dolizone.com/kafka-plateforme-agent-native/)
+> Article: [Quand un agent IA diagnostique, corrige et rejoue votre Kafka — tout seul](https://kafblog.dolizone.com/blog/kafka-plateforme-agent-native/)
 
-This is the second PoC in the series. The [first PoC](https://github.com/arabaaoui/kafka-for-agents) used Kafka as **coordination infrastructure** for business agents (retail replenishment). This one flips the target: Kafka is the **thing being operated on** — the agents diagnose and repair Kafka itself. MCP stops being an auxiliary tool and becomes the primary interface; Agent Skills generate Kafka code instead of business rules; KIP-932 does enrichment replay instead of homogeneous task distribution. The first PoC's companion article: [Kafka remplace vos middlewares — une supply chain de 200 magasins pilotée par 3 agents IA](https://blog.dolizone.com/kafka-agents-supply-chain/).
+This is the second PoC in the series. The [first PoC](https://github.com/arabaaoui/kafka-for-agents) used Kafka as **coordination infrastructure** for business agents (retail replenishment). This one flips the target: Kafka is the **thing being operated on** — the agents diagnose and repair Kafka itself. MCP stops being an auxiliary tool and becomes the primary interface; Agent Skills generate Kafka code instead of business rules; KIP-932 does enrichment replay instead of homogeneous task distribution. The first PoC's companion article: [Kafka remplace vos middlewares — une supply chain de 200 magasins pilotée par 3 agents IA](https://kafblog.dolizone.com/blog/kafka-agents-supply-chain/).
 
 ---
 
