@@ -21,18 +21,18 @@ A legacy producer has a bug: some invoices published to the `facturation` topic 
 
 ```mermaid
 flowchart TB
-    BUG["Legacy producer bug<br/>50 of 550 invoices siret null"]
+    BUG["Legacy producer bug 50 of 550 invoices siret null"]
 
-    BUG --> LAG["Consumer group facturation<br/>falls behind"]
+    BUG --> LAG["Consumer group facturation falls behind"]
 
-    LAG --> DIAG["DIAGNOSTIC<br/>MCP get consumer lag and read messages<br/>cause siret null 50 messages affected"]
+    LAG --> DIAG["DIAGNOSTIC MCP get consumer lag and read messages cause siret null 50 messages affected"]
 
-    DIAG --> REM["REMEDIATION<br/>SKILL.md kafka streams filter<br/>generates a Kafka Streams filter topology"]
+    DIAG --> REM["REMEDIATION SKILL.md kafka streams filter generates a Kafka Streams filter topology"]
 
-    REM --> REPLAY["REPLAY KIP 932 share group x3<br/>enrich message then publish corrected"]
+    REM --> REPLAY["REPLAY KIP 932 share group x3 enrich message then publish corrected"]
 
-    REPLAY --> FIXED["facturation corrige<br/>enriched invoices"]
-    REPLAY --> DLQ["facturation dead letter<br/>unrecoverable after 3 attempts"]
+    REPLAY --> FIXED["facturation corrige enriched invoices"]
+    REPLAY --> DLQ["facturation dead letter unrecoverable after 3 attempts"]
 ```
 
 ### Functional Walkthrough
