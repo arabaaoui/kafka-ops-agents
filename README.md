@@ -21,18 +21,18 @@ A legacy producer has a bug: some invoices published to the `facturation` topic 
 
 ```mermaid
 flowchart TB
-    BUG["Legacy producer bug<br/>50/550 invoices: siret=null"]
+    BUG["Legacy producer bug<br/>50 of 550 invoices siret null"]
 
     BUG --> LAG["Consumer group facturation<br/>falls behind"]
 
-    LAG --> DIAG["DIAGNOSTIC<br/>MCP: get_consumer_lag + read_messages<br/>cause: siret null, 50 messages affected"]
+    LAG --> DIAG["DIAGNOSTIC<br/>MCP get consumer lag and read messages<br/>cause siret null 50 messages affected"]
 
-    DIAG --> REM["REMEDIATION<br/>SKILL.md kafka-streams-filter<br/>generates a Kafka Streams filter topology"]
+    DIAG --> REM["REMEDIATION<br/>SKILL.md kafka streams filter<br/>generates a Kafka Streams filter topology"]
 
-    REM --> REPLAY["REPLAY (KIP-932 share group x3)<br/>enrich_message then publish_corrected"]
+    REM --> REPLAY["REPLAY KIP 932 share group x3<br/>enrich message then publish corrected"]
 
-    REPLAY --> FIXED["facturation-corrige<br/>enriched invoices"]
-    REPLAY --> DLQ["facturation-dead-letter<br/>unrecoverable after 3 attempts"]
+    REPLAY --> FIXED["facturation corrige<br/>enriched invoices"]
+    REPLAY --> DLQ["facturation dead letter<br/>unrecoverable after 3 attempts"]
 ```
 
 ### Functional Walkthrough
@@ -47,21 +47,21 @@ sequenceDiagram
 
     PI->>PI: seed 500 valid and 50 invalid invoices
     PI->>D: facturation topic ready
-    D->>M: get_consumer_lag facturation
+    D->>M: get consumer lag facturation
     M-->>D: lag detected
-    D->>M: read_messages facturation
+    D->>M: read messages facturation
     M-->>D: sampled messages
     D->>D: pattern match siret null
     D->>R: incident siret null 50 messages
-    R->>R: apply SKILL.md kafka-streams-filter
+    R->>R: apply SKILL.md kafka streams filter
     R->>R: generate Kafka Streams filter and DLT
     R->>P: replay task for facturation
     loop each faulty message up to 3 attempts
         P->>P: enrich message 80% success
         alt enriched
-            P->>P: publish to facturation-corrige
+            P->>P: publish to facturation corrige
         else 3 failed attempts
-            P->>P: dead letter to facturation-dead-letter
+            P->>P: dead letter to facturation dead letter
         end
     end
 ```
@@ -78,31 +78,31 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    PI["Problem Injector<br/>one-shot: 500 valid + 50 invalid<br/>no LLM"]
+    PI["Problem Injector<br/>one shot 500 valid plus 50 invalid<br/>no LLM"]
 
     subgraph KAFKA["Apache Kafka 4.2.1 KRaft"]
         direction LR
         T_FACT[("facturation")]
         T_ALERT[("alerts")]
         T_INC[("incidents")]
-        T_TASK[("replay-tasks")]
-        T_CORR[("facturation-corrige")]
-        T_DLQ[("facturation-dead-letter")]
+        T_TASK[("replay tasks")]
+        T_CORR[("facturation corrige")]
+        T_DLQ[("facturation dead letter")]
         T_AUDIT[("audit")]
     end
 
     subgraph DIAG["Diagnostic Agent"]
-        DIAG_ADK["google-adk Agent<br/>DIAGNOSTIC_LLM"]
+        DIAG_ADK["google adk Agent<br/>DIAGNOSTIC LLM"]
     end
 
     subgraph REM["Remediation Agent"]
-        REM_SKILL["SKILL.md<br/>kafka-streams-filter"]
-        REM_ADK["google-adk Agent<br/>REMEDIATION_LLM"]
+        REM_SKILL["SKILL.md<br/>kafka streams filter"]
+        REM_ADK["google adk Agent<br/>REMEDIATION LLM"]
         REM_SKILL -.-> REM_ADK
     end
 
-    subgraph REPLAY["Replay Agent x3 KIP-932"]
-        REPLAY_ADK["google-adk Agent<br/>REPLAY_LLM optional"]
+    subgraph REPLAY["Replay Agent x3 KIP 932"]
+        REPLAY_ADK["google adk Agent<br/>REPLAY LLM optional"]
         REPLAY_DET["Deterministic fallback<br/>simulated 80% success"]
     end
 
@@ -110,12 +110,12 @@ flowchart TB
     UI["Kafka UI port 8081"]
 
     PI -->|produce| T_FACT
-    T_ALERT -->|poll or self-trigger| DIAG
-    DIAG -->|get_consumer_lag and read_messages| MCP
+    T_ALERT -->|poll or self trigger| DIAG
+    DIAG -->|get consumer lag and read messages| MCP
     MCP -->|queries| T_FACT
     DIAG -->|diagnose| T_INC
     T_INC -->|poll| REM
-    REM -->|generate_filter and deploy| T_AUDIT
+    REM -->|generate filter and deploy| T_AUDIT
     REM -->|replay task| T_TASK
     T_TASK -->|ShareGroupClient poll| REPLAY
     REPLAY -->|enrich and publish| T_CORR
