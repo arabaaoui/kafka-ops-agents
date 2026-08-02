@@ -4,7 +4,7 @@ local-test:
 	python tests/test_deterministic_flow.py
 
 test-stack:
-	docker network create kafka-agentic-ops-test 2>/dev/null || true
+	docker network create kafka-ops-agents-test 2>/dev/null || true
 	docker compose -f docker-compose.test.yml up -d
 	@echo "Test Kafka ready on port 9093"
 	@echo "Kafka UI ready at http://localhost:8081"
@@ -33,7 +33,7 @@ clean:
 	docker compose -f docker-compose.app.yml down
 
 clean-all: clean
-	docker network rm kafka-agentic-ops-test 2>/dev/null || true
+	docker network rm kafka-ops-agents-test 2>/dev/null || true
 
 monitor:
 	docker compose -f docker-compose.app.yml logs -f & \

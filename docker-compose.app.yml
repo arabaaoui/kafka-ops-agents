@@ -1,6 +1,6 @@
 
 networks:
-  kafka-agentic-ops-test:
+  kafka-ops-agents-test:
     external: true
 
 services:
@@ -13,7 +13,7 @@ services:
     ports:
       - "3000:3000"
     networks:
-      - kafka-agentic-ops-test
+      - kafka-ops-agents-test
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
       MCP_PORT: "3000"
@@ -27,7 +27,7 @@ services:
       dockerfile: Dockerfile.agent
     command: python -m problem_injector.app
     networks:
-      - kafka-agentic-ops-test
+      - kafka-ops-agents-test
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
 
@@ -40,7 +40,7 @@ services:
       dockerfile: Dockerfile.agent
     command: python -m diagnostic.agent
     networks:
-      - kafka-agentic-ops-test
+      - kafka-ops-agents-test
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
       MCP_CONFLUENT_URL: http://mcp-confluent:3000
@@ -61,7 +61,7 @@ services:
       dockerfile: Dockerfile.agent
     command: python -m remediation.agent
     networks:
-      - kafka-agentic-ops-test
+      - kafka-ops-agents-test
     volumes:
       - ./skills:/app/skills:ro
     environment:
@@ -82,7 +82,7 @@ services:
     # Scale further with: docker compose -f docker-compose.app.yml up -d --scale replay-agent=5
     command: python -m replay.agent
     networks:
-      - kafka-agentic-ops-test
+      - kafka-ops-agents-test
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
       SHARE_GROUP: replay-group

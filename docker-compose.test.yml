@@ -1,6 +1,6 @@
 
 networks:
-  kafka-agentic-ops-test:
+  kafka-ops-agents-test:
     external: true
 
 services:
@@ -13,7 +13,7 @@ services:
     ports:
       - "9093:9093"
     networks:
-      - kafka-agentic-ops-test
+      - kafka-ops-agents-test
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -42,7 +42,7 @@ services:
     ports:
       - "8081:8080"
     networks:
-      - kafka-agentic-ops-test
+      - kafka-ops-agents-test
     environment:
       KAFKA_CLUSTERS_0_NAME: agentic-ops-test-cluster
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
@@ -57,7 +57,7 @@ services:
     image: edenhill/kcat:latest
     container_name: kcat-test
     networks:
-      - kafka-agentic-ops-test
+      - kafka-ops-agents-test
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -73,7 +73,7 @@ services:
   kafka-init:
     image: apache/kafka:4.2.1
     networks:
-      - kafka-agentic-ops-test
+      - kafka-ops-agents-test
     depends_on:
       kafka:
         condition: service_healthy

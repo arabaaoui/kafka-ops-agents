@@ -1,6 +1,6 @@
 # SPEC — PoC 2 : Kafka agent-native platform (diagnostic → correctif → replay)
 
-**Target repo** : `arabaaoui/kafka-agentic-ops` (repo à créer)
+**Target repo** : `arabaaoui/kafka-ops-agents` (repo à créer)
 **Source d'inspiration** : `arabaaoui/kafka-for-agents` (PoC 1 supply chain)
 **Article associé** : [[kafka-plateforme-agent-native]]
 

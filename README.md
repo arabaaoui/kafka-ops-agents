@@ -271,7 +271,7 @@ For local development, the stack is split into two independent Compose files sha
 | `docker-compose.test.yml` | Standalone Kafka 4.2.1 (KRaft, 1 broker) + topic init (`facturation`, `facturation-corrige`, `alerts`, `incidents`, `replay-tasks`, `audit`) + Kafka UI (`:8081`) + `kcat` one-shot topic summary | `9093` |
 | `docker-compose.app.yml` | `mcp-confluent`, `problem-injector`, `diagnostic-agent`, `remediation-agent`, `replay-agent` ×3 (no Kafka) | — (connects to `kafka:9093`) |
 
-Both files attach to a shared external network, `kafka-agentic-ops-test`, so the app services resolve the test broker by its service name (`kafka`).
+Both files attach to a shared external network, `kafka-ops-agents-test`, so the app services resolve the test broker by its service name (`kafka`).
 
 ### Makefile targets
 
@@ -290,7 +290,7 @@ make local-test    # run the local Python deterministic-flow test, no Docker/LLM
 make stop-app      # stop the app services
 make stop-test     # stop the test Kafka cluster
 make clean         # stop everything and remove the test Kafka volume
-make clean-all     # clean + remove the shared kafka-agentic-ops-test network
+make clean-all     # clean + remove the shared kafka-ops-agents-test network
 ```
 
 ### Monitoring the pipeline
@@ -308,7 +308,7 @@ make topics    # partition layout and replication for each topic
 ## Project Structure
 
 ```
-kafka-agentic-ops/
+kafka-ops-agents/
 ├── .env.example                      # Environment variable template (3 LLM blocks)
 ├── docker-compose.test.yml           # Standalone test Kafka cluster (port 9093)
 ├── docker-compose.app.yml            # App services only, connects to the test cluster
