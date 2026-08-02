@@ -1,0 +1,93 @@
+
+networks:
+  kafka-agentic-ops-test:
+    external: true
+
+services:
+  # ===========================================================================
+  # Kafka 4.2.1 — KRaft mode, standalone test broker
+  # ===========================================================================
+  kafka:
+    image: apache/kafka:4.2.1
+    hostname: kafka
+    ports:
+      - "9093:9093"
+    networks:
+      - kafka-agentic-ops-test
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9093,CONTROLLER://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9094
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes:
+      - kafka-test-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9093"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # ===========================================================================
+  # Kafka UI — Web dashboard (port 8081 to avoid clashing with the main stack)
+  # ===========================================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui-test
+    ports:
+      - "8081:8080"
+    networks:
+      - kafka-agentic-ops-test
+    environment:
+      KAFKA_CLUSTERS_0_NAME: agentic-ops-test-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # ===========================================================================
+  # kcat — One-shot topic summary, printed once the broker is ready
+  # ===========================================================================
+  kcat:
+    image: edenhill/kcat:latest
+    container_name: kcat-test
+    networks:
+      - kafka-agentic-ops-test
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "=== Topic summary (kafka:9093) ===" &&
+        kcat -b kafka:9093 -L
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
+  # ===========================================================================
+  # Topic initializer — Creates test topics on startup
+  # ===========================================================================
+  kafka-init:
+    image: apache/kafka:4.2.1
+    networks:
+      - kafka-agentic-ops-test
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "Creating test topics..."
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic facturation --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic facturation-corrige --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic alerts --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic incidents --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic replay-tasks --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic audit --partitions 1 --replication-factor 1
+        echo "Test topics ready."
+
+volumes:
+  kafka-test-data:
