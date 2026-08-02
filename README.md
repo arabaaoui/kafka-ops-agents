@@ -77,49 +77,31 @@ sequenceDiagram
 ## Architecture
 
 ```mermaid
-flowchart TB
-    PI["Problem Injector - one shot seed, no LLM"]
+flowchart TD
+    A[Problem Injector]
+    B[Kafka topic facturation]
+    C[MCP Confluent]
+    D[Diagnostic Agent]
+    E[Kafka topic incidents]
+    F[Remediation Agent]
+    G[Kafka topic audit]
+    H[Kafka topic replay tasks]
+    I[Replay Agent x3]
+    J[Kafka topic facturation corrigee]
+    K[Kafka topic facturation dead letter]
+    L[Kafka UI]
 
-    subgraph KAFKA["Apache Kafka 4.2.1 KRaft"]
-        T_FACT["facturation"]
-        T_ALERT["alerts"]
-        T_INC["incidents"]
-        T_TASK["replay tasks"]
-        T_CORR["facturation corrigee"]
-        T_DLQ["facturation dead letter"]
-        T_AUDIT["audit"]
-    end
-
-    subgraph DIAG["Diagnostic Agent"]
-        DIAG_ADK["google adk Agent - Diagnostic LLM"]
-    end
-
-    subgraph REM["Remediation Agent"]
-        REM_SKILL["SKILL.md kafka streams filter"]
-        REM_ADK["google adk Agent - Remediation LLM"]
-        REM_SKILL --> REM_ADK
-    end
-
-    subgraph REPLAY["Replay Agent x3 - KIP 932"]
-        REPLAY_ADK["google adk Agent - Replay LLM optional"]
-        REPLAY_DET["Deterministic fallback - simulated 80 percent success"]
-    end
-
-    MCP["MCP Confluent port 3000"]
-    UI["Kafka UI port 8081"]
-
-    PI --> T_FACT
-    T_ALERT --> DIAG_ADK
-    DIAG_ADK --> MCP
-    MCP --> T_FACT
-    DIAG_ADK --> T_INC
-    T_INC --> REM_ADK
-    REM_ADK --> T_AUDIT
-    REM_ADK --> T_TASK
-    T_TASK --> REPLAY_ADK
-    REPLAY_ADK --> T_CORR
-    REPLAY_ADK --> T_DLQ
-    T_FACT --> UI
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    F --> H
+    H --> I
+    I --> J
+    I --> K
+    B --> L
 ```
 
 **Pipeline flow:**
