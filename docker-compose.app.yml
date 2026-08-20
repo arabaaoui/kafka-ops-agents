@@ -19,7 +19,7 @@ services:
       MCP_PORT: "3000"
 
   # ===========================================================================
-  # Problem Injector — One-shot seeding of the 'facturation' problem scenario
+  # Problem Injector — One-shot seeding of the month-end billing lag scenario
   # ===========================================================================
   problem-injector:
     build:
@@ -32,7 +32,7 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
 
   # ===========================================================================
-  # Agent 1 — Diagnostic (ADK + MCP Confluent tools)
+  # Agent 1 — Diagnostic (ADK + MCP Confluent read-only tools)
   # ===========================================================================
   diagnostic-agent:
     build:
@@ -53,7 +53,7 @@ services:
     restart: unless-stopped
 
   # ===========================================================================
-  # Agent 2 — Remediation (ADK + Agent Skill SKILL.md)
+  # Agent 2 — Remediation (ADK, propose then execute after human confirmation)
   # ===========================================================================
   remediation-agent:
     build:
@@ -62,36 +62,11 @@ services:
     command: python -m remediation.agent
     networks:
       - kafka-ops-agents-test
-    volumes:
-      - ./skills:/app/skills:ro
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
-      SKILL_PATH: /app/skills/kafka-streams-filter/SKILL.md
+      SHARE_GROUP_LOCK_DURATION_MS: ${SHARE_GROUP_LOCK_DURATION_MS:-30000}
+      SHARE_GROUP_DELIVERY_COUNT_LIMIT: ${SHARE_GROUP_DELIVERY_COUNT_LIMIT:-5}
       REMEDIATION_LLM_PROVIDER: ${REMEDIATION_LLM_PROVIDER:-anthropic}
       REMEDIATION_LLM_MODEL: ${REMEDIATION_LLM_MODEL:-claude-sonnet-4}
       REMEDIATION_LLM_API_KEY: ${REMEDIATION_LLM_API_KEY}
-    restart: unless-stopped
-
-  # ===========================================================================
-  # Agent 3 — Replay (ADK + KIP-932 share group), scaled to 3 replicas
-  # ===========================================================================
-  replay-agent:
-    build:
-      context: ./agents
-      dockerfile: Dockerfile.agent
-    # Scale further with: docker compose -f docker-compose.app.yml up -d --scale replay-agent=5
-    command: python -m replay.agent
-    networks:
-      - kafka-ops-agents-test
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
-      SHARE_GROUP: replay-group
-      SHARE_GROUP_LOCK_DURATION_MS: ${SHARE_GROUP_LOCK_DURATION_MS:-30000}
-      SHARE_GROUP_MAX_DELIVERY_ATTEMPTS: ${SHARE_GROUP_MAX_DELIVERY_ATTEMPTS:-5}
-      # Optional — leave empty to run this agent fully deterministic (no LLM call).
-      REPLAY_LLM_PROVIDER: ${REPLAY_LLM_PROVIDER:-}
-      REPLAY_LLM_MODEL: ${REPLAY_LLM_MODEL:-}
-      REPLAY_LLM_API_KEY: ${REPLAY_LLM_API_KEY:-}
-    deploy:
-      replicas: 3
     restart: unless-stopped
