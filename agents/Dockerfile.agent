@@ -16,7 +16,6 @@ COPY common/ /app/common/
 COPY problem_injector/ /app/problem_injector/
 COPY diagnostic/ /app/diagnostic/
 COPY remediation/ /app/remediation/
-COPY replay/ /app/replay/
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
