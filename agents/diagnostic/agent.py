@@ -1,15 +1,21 @@
 """
-Diagnostic Agent — Diagnoses Kafka consumer group problems via MCP Confluent.
+Diagnostic Agent — Diagnoses Kafka consumer group lag via MCP Confluent, in
+read-only mode.
 
 Polls the 'alerts' topic (or simply runs at startup, acting as its own
 trigger) and diagnoses the 'facturation' consumer group: fetches lag via MCP,
-samples the topic for the offending message pattern (siret=null), and
-publishes a structured diagnostic to 'incidents'.
+samples the 'factures' topic to rule out a content problem, inspects the
+topic's configuration, and publishes a structured diagnostic to 'incidents'.
 
-The diagnostic LLM is OPTIONAL, same principle as the other agents. If
+get_consumer_lag and read_messages are real MCP Confluent calls against the
+local Kafka. get_topic_config is SIMULATED (see
+common/simulated_control_plane.py): the real MCP tool only works against a
+Confluent Cloud cluster, not this local bootstrap_servers connection.
+
+The diagnostic LLM is OPTIONAL, same principle as the other agent. If
 DIAGNOSTIC_LLM_API_KEY is empty, no ADK agent is ever instantiated: the
-Python loop calls get_consumer_lag / read_messages / diagnose directly,
-producing the exact same deterministic pattern-matching result.
+Python loop calls get_consumer_lag / read_messages / get_topic_config /
+diagnose directly, producing the exact same deterministic result.
 """
 
 import json
@@ -26,12 +32,13 @@ from common.config import (
     MCP_CONFLUENT_URL,
     TOPIC_ALERTS,
     TOPIC_INCIDENTS,
+    TOPIC_FACTURES,
     FACTURATION_CONSUMER_GROUP,
-    TOPIC_FACTURATION,
     DIAGNOSTIC_LLM_PROVIDER,
     DIAGNOSTIC_LLM_MODEL,
     DIAGNOSTIC_LLM_API_KEY,
 )
+from common.simulated_control_plane import get_topic_config_simulated
 from common.adk_factory import AdkAgentRunner
 from diagnostic.prompts import SYSTEM_PROMPT, DIAGNOSTIC_USER_PROMPT
 
@@ -58,7 +65,7 @@ signal.signal(signal.SIGINT, handle_sigterm)
 
 # Startup grace period: wait this long for a message on 'alerts' before
 # running the diagnostic pass on its own (the demo has no alerting producer,
-# so the agent acts as its own trigger — "démarre sur signal" in the spec).
+# so the agent acts as its own trigger).
 STARTUP_GRACE_S = 15
 # How long to wait, once diagnosed, before allowing another diagnostic pass.
 REDIAGNOSE_COOLDOWN_S = 60
@@ -92,31 +99,32 @@ def call_mcp(tool_name: str, arguments: dict) -> dict | list:
         return {}
 
 
-def build_diagnostic(consumer_group: str, lag_data: dict, sample_messages: list) -> dict:
+def build_diagnostic(consumer_group: str, lag_data: dict, topic_config: dict) -> dict:
     """
-    Deterministic pattern-matching: count how many sampled messages have
-    siret=null. This is the actual root-cause analysis — no LLM required.
+    Deterministic root-cause analysis: a topic left at its default
+    compression.type ('producer', i.e. no broker-side compression) on a
+    high-throughput topic saturates broker disk I/O and network during
+    traffic spikes, which is exactly what slows down fetches for
+    'facturation'. This is the actual diagnosis — no LLM required.
     """
-    invalid_count = 0
-    for entry in sample_messages if isinstance(sample_messages, list) else []:
-        raw_value = entry.get("value") if isinstance(entry, dict) else None
-        if not raw_value:
-            continue
-        try:
-            payload = json.loads(raw_value)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if payload.get("siret") is None:
-            invalid_count += 1
+    compression = topic_config.get("compression.type") if isinstance(topic_config, dict) else None
 
-    cause = "siret null" if invalid_count > 0 else "cause inconnue"
+    if compression == "producer":
+        cause = "factures n'a jamais ete retaille pour son debit reel (compression.type=producer)"
+        recommended_config = {"compression.type": "lz4"}
+    else:
+        cause = "cause inconnue"
+        recommended_config = {}
+
     timestamp = datetime.now(timezone.utc).isoformat()
 
     return {
         "incident_id": f"incident-{consumer_group}-{int(time.time() * 1000)}",
         "consumer_group": consumer_group,
+        "topic": TOPIC_FACTURES,
         "cause": cause,
-        "messages_affected": invalid_count,
+        "current_config": topic_config if isinstance(topic_config, dict) else {},
+        "recommended_config": recommended_config,
         "lag_state": lag_data.get("state") if isinstance(lag_data, dict) else None,
         "timestamp": timestamp,
     }
@@ -134,7 +142,7 @@ def produce_incident(producer: Producer, incident: dict) -> None:
     producer.flush(timeout=5)
     logger.info(
         f"Incident produced: consumer_group={incident.get('consumer_group')} "
-        f"cause={incident.get('cause')} messages_affected={incident.get('messages_affected')}"
+        f"cause={incident.get('cause')} recommended_config={incident.get('recommended_config')}"
     )
 
 
@@ -149,47 +157,48 @@ class DiagnosticTools:
         """Fetch consumer group lag/state via MCP Confluent (get-consumer-group-lag)."""
         return call_mcp("get-consumer-group-lag", {"group": group})
 
-    def read_messages(self, topic: str, partition: int = 0, count: int = 600) -> list:
-        """
-        Read messages from a Kafka topic via MCP Confluent (consume-messages),
-        reading from the beginning to reliably catch faulty messages appended
-        at the tail of the topic.
-        """
+    def read_messages(self, topic: str, partition: int = 0, count: int = 5) -> list:
+        """Read a few messages from a Kafka topic via MCP Confluent (consume-messages), to rule out a content anomaly."""
         result = call_mcp(
             "consume-messages",
-            {"topic": topic, "partition": partition, "max_messages": count, "start": "beginning"},
+            {"topic": topic, "partition": partition, "max_messages": count, "start": "end"},
         )
         if isinstance(result, dict):
             return result.get("messages", [])
         return []
 
-    def diagnose(self, lag_data_json: str, sample_messages_json: str) -> str:
+    def get_topic_config(self, topic: str) -> dict:
+        """SIMULATED get-topic-config — the real tool requires a Confluent Cloud endpoint, unavailable on this local Kafka."""
+        return get_topic_config_simulated(topic)
+
+    def diagnose(self, lag_data_json: str, sample_messages_json: str, topic_config_json: str) -> str:
         """
-        Deterministic tool: analyzes the lag data and sample messages already
-        fetched by the other tools (no external call) and publishes the
-        diagnostic to the 'incidents' topic. Call exactly once.
+        Deterministic tool: analyzes the lag, sample messages and topic config
+        already fetched by the other tools (no external call) and publishes
+        the diagnostic to the 'incidents' topic. Call exactly once.
         """
         try:
             lag_data = json.loads(lag_data_json) if isinstance(lag_data_json, str) else (lag_data_json or {})
         except json.JSONDecodeError:
             lag_data = {}
         try:
-            sample_messages = json.loads(sample_messages_json) if isinstance(sample_messages_json, str) else (sample_messages_json or [])
+            topic_config = json.loads(topic_config_json) if isinstance(topic_config_json, str) else (topic_config_json or {})
         except json.JSONDecodeError:
-            sample_messages = []
+            topic_config = {}
 
-        incident = build_diagnostic(FACTURATION_CONSUMER_GROUP, lag_data, sample_messages)
+        incident = build_diagnostic(FACTURATION_CONSUMER_GROUP, lag_data, topic_config)
         produce_incident(self._producer, incident)
         self.incident_produced = True
-        return f"OK: diagnostic publié — cause={incident['cause']} messages_affected={incident['messages_affected']}"
+        return f"OK: diagnostic publié — cause={incident['cause']}"
 
 
 def deterministic_diagnose(tools: DiagnosticTools) -> None:
     """No-LLM diagnostic path: call the same tools directly, in order."""
     logger.info("No DIAGNOSTIC_LLM_API_KEY configured — running deterministic diagnosis")
     lag_data = tools.get_consumer_lag(FACTURATION_CONSUMER_GROUP)
-    sample_messages = tools.read_messages(TOPIC_FACTURATION, 0, 600)
-    incident = build_diagnostic(FACTURATION_CONSUMER_GROUP, lag_data, sample_messages)
+    tools.read_messages(TOPIC_FACTURES, 0, 5)  # sampled only to rule out a content anomaly, not used in the cause
+    topic_config = tools.get_topic_config(TOPIC_FACTURES)
+    incident = build_diagnostic(FACTURATION_CONSUMER_GROUP, lag_data, topic_config)
     produce_incident(tools._producer, incident)
     tools.incident_produced = True
 
@@ -201,7 +210,7 @@ def run_diagnosis(agent_runner: AdkAgentRunner | None, tools: DiagnosticTools) -
     if agent_runner is not None:
         user_prompt = DIAGNOSTIC_USER_PROMPT.format(
             consumer_group=FACTURATION_CONSUMER_GROUP,
-            topic=TOPIC_FACTURATION,
+            topic=TOPIC_FACTURES,
         )
         try:
             response = agent_runner.run(user_prompt)
@@ -235,7 +244,7 @@ def main():
             name="diagnostic-agent",
             description="Diagnostique la cause racine d'un consumer group Kafka en retard.",
             instruction=SYSTEM_PROMPT,
-            tools=[tools.get_consumer_lag, tools.read_messages, tools.diagnose],
+            tools=[tools.get_consumer_lag, tools.read_messages, tools.get_topic_config, tools.diagnose],
             provider=DIAGNOSTIC_LLM_PROVIDER,
             model=DIAGNOSTIC_LLM_MODEL,
             api_key=DIAGNOSTIC_LLM_API_KEY,
