@@ -1,4 +1,4 @@
-.PHONY: test-stack app all logs logs-test stop-app stop-test clean clean-all local-test monitor topics demo-diag demo-replay check
+.PHONY: test-stack app all logs logs-test stop-app stop-test clean clean-all local-test monitor topics demo-diag confirm check
 
 local-test:
 	python tests/test_deterministic_flow.py
@@ -46,12 +46,12 @@ topics:
 # ---- Demo scripts ----
 
 demo-diag:
-	@echo "=== Demo: Diagnostic → Remédiation → Replay ==="
+	@echo "=== Demo: Diagnostic → Remédiation (avec confirmation humaine) ==="
 	./scripts/demo-diag.sh
 
-demo-replay:
-	@echo "=== Demo: Replay Scaling (bonus) ==="
-	./scripts/demo-replay.sh
+confirm:
+	@echo "=== Confirmation de la proposition de remédiation en attente ==="
+	./scripts/confirm-remediation.sh $(INCIDENT)
 
 # ---- Pipeline health check ----
 
@@ -66,7 +66,7 @@ check:
 	done
 	@echo ""
 	@echo "--- Topic Message Counts ---"
-	@for topic in facturation facturation-corrige facturation-dead-letter alerts incidents replay-tasks audit; do \
+	@for topic in factures alerts incidents remediation-confirmations audit; do \
 		count=$$(docker compose -f docker-compose.test.yml exec -T kafka /opt/kafka/bin/kafka-run-class.sh kafka.tools.GetOffsetShell --bootstrap-server kafka:9093 --topic $$topic --time -1 2>/dev/null | awk -F: '{sum+=$$NF} END{print sum+0}'); \
 		echo "  $$topic: $$count messages"; \
 	done
@@ -74,5 +74,5 @@ check:
 	@echo "--- Recent Incidents (last 10) ---"
 	@docker compose -f docker-compose.app.yml logs --tail=200 2>/dev/null | grep -i "incident produced\|diagnostic" | tail -10 || echo "  (no incidents yet)"
 	@echo ""
-	@echo "--- Recent Replay Results (last 10) ---"
-	@docker compose -f docker-compose.app.yml logs --tail=200 2>/dev/null | grep -E "ACK|DEAD|enrichi" | tail -10 || echo "  (no replay activity yet)"
+	@echo "--- Recent Remediation Activity (last 10) ---"
+	@docker compose -f docker-compose.app.yml logs --tail=200 2>/dev/null | grep -E "PROPOSAL|SIMULATED|Confirmation" | tail -10 || echo "  (no remediation activity yet)"
