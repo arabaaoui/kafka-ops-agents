@@ -1,9 +1,15 @@
 """
-Problem Injector — One-shot script that seeds the 'facturation' problem scenario.
+Problem Injector — One-shot script that seeds the month-end billing spike
+scenario described in the article: a burst of invoices on 'factures' that
+the 'facturation' consumer group falls behind on.
 
-Creates the 'facturation' topic (if missing), then produces 500 valid invoice
-messages followed by 50 invalid ones (siret=null) — simulating a legacy
-producer bug. Runs once and exits; not a long-running service.
+Creates the 'factures' topic (if missing), produces a batch of invoice
+messages, then has a throwaway consumer in the 'facturation' group commit
+only part of them — deliberately leaving the lag the diagnostic agent is
+meant to discover (1452 messages, matching the article's incident). There is
+no faulty message in this scenario: the root cause is the topic's
+configuration, not its content. Runs once and exits; not a long-running
+service.
 """
 
 import json
@@ -11,10 +17,10 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from confluent_kafka import Producer
+from confluent_kafka import Consumer, Producer, TopicPartition
 from confluent_kafka.admin import AdminClient, NewTopic
 
-from common.config import KAFKA_BOOTSTRAP_SERVERS, TOPIC_FACTURATION
+from common.config import KAFKA_BOOTSTRAP_SERVERS, TOPIC_FACTURES, FACTURATION_CONSUMER_GROUP, TARGET_LAG
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,9 +28,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("problem_injector")
 
-VALID_COUNT = 500
-INVALID_COUNT = 50
-VALID_SIRET = "12345678901234"
+# Consumed and committed right away by the 'facturation' group, so that
+# TOTAL_MESSAGES - CONSUMED_BY_GROUP == TARGET_LAG (1452, the article's figure).
+CONSUMED_BY_GROUP = 100
+TOTAL_MESSAGES = TARGET_LAG + CONSUMED_BY_GROUP
 
 
 def ensure_topic(admin: AdminClient, topic: str) -> None:
@@ -44,20 +51,20 @@ def ensure_topic(admin: AdminClient, topic: str) -> None:
             logger.warning(f"Could not create topic '{name}' (may already exist): {e}")
 
 
-def make_message(msg_id: int, valid: bool) -> dict:
+def make_message(msg_id: int) -> dict:
     return {
         "id": msg_id,
-        "siret": VALID_SIRET if valid else None,
+        "client_id": f"CLI-{msg_id % 500:04d}",
         "montant": round(50 + (msg_id % 100) * 3.37, 2),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
-def produce_batch(producer: Producer, start_id: int, count: int, valid: bool) -> None:
+def produce_batch(producer: Producer, start_id: int, count: int) -> None:
     for i in range(count):
-        msg = make_message(start_id + i, valid)
+        msg = make_message(start_id + i)
         producer.produce(
-            TOPIC_FACTURATION,
+            TOPIC_FACTURES,
             key=str(msg["id"]),
             value=json.dumps(msg, ensure_ascii=False).encode("utf-8"),
             on_delivery=lambda err, m: logger.error(f"Delivery failed: {err}") if err else None,
@@ -65,23 +72,58 @@ def produce_batch(producer: Producer, start_id: int, count: int, valid: bool) ->
     producer.flush(timeout=10)
 
 
+def create_group_lag(count_to_consume: int) -> None:
+    """
+    Have the 'facturation' consumer group read and commit only the first
+    `count_to_consume` messages from 'factures', then disconnect — leaving
+    the rest of the topic as lag for the diagnostic agent to find.
+    """
+    consumer = Consumer({
+        "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+        "group.id": FACTURATION_CONSUMER_GROUP,
+        "auto.offset.reset": "earliest",
+        "enable.auto.commit": False,
+    })
+    consumer.subscribe([TOPIC_FACTURES])
+
+    consumed = 0
+    deadline = time.time() + 30
+    last_msg = None
+    while consumed < count_to_consume and time.time() < deadline:
+        msg = consumer.poll(timeout=1.0)
+        if msg is None or msg.error():
+            continue
+        last_msg = msg
+        consumed += 1
+
+    if last_msg is not None:
+        consumer.commit(
+            offsets=[TopicPartition(TOPIC_FACTURES, last_msg.partition(), last_msg.offset() + 1)],
+            asynchronous=False,
+        )
+    consumer.close()
+    logger.info(f"Consumer group '{FACTURATION_CONSUMER_GROUP}' committed {consumed} messages")
+
+
 def main() -> None:
     admin = AdminClient({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS})
-    ensure_topic(admin, TOPIC_FACTURATION)
+    ensure_topic(admin, TOPIC_FACTURES)
 
     # Give the broker a moment to propagate topic metadata before producing.
     time.sleep(2)
 
     producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS})
 
-    logger.info(f"Producing {VALID_COUNT} valid messages into '{TOPIC_FACTURATION}'...")
-    produce_batch(producer, start_id=1, count=VALID_COUNT, valid=True)
+    logger.info(f"Simulating a month-end billing spike: producing {TOTAL_MESSAGES} messages into '{TOPIC_FACTURES}'...")
+    produce_batch(producer, start_id=1, count=TOTAL_MESSAGES)
 
-    logger.info(f"Producing {INVALID_COUNT} invalid messages (siret=null) into '{TOPIC_FACTURATION}'...")
-    produce_batch(producer, start_id=VALID_COUNT + 1, count=INVALID_COUNT, valid=False)
+    create_group_lag(CONSUMED_BY_GROUP)
 
-    total = VALID_COUNT + INVALID_COUNT
-    logger.info(f"{total} messages dans {TOPIC_FACTURATION} (dont {INVALID_COUNT} avec siret=null)")
+    lag = TOTAL_MESSAGES - CONSUMED_BY_GROUP
+    logger.info(
+        f"{TOTAL_MESSAGES} messages dans '{TOPIC_FACTURES}' — "
+        f"consumer group '{FACTURATION_CONSUMER_GROUP}' a un retard de {lag} messages"
+    )
 
 
 if __name__ == "__main__":
