@@ -1,76 +1,83 @@
-# Kafka Agentic Ops — Kafka as an Agent-Native Platform
+# Kafka Agentic Ops — Kafka Control Plane, Agent-Native
 
-[![Kafka](https://img.shields.io/badge/Kafka-4.2.1-231F20?style=flat-square&logo=apache-kafka)](https://kafka.apache.org/)
+[![Kafka](https://img.shields.io/badge/Kafka-4.2.x-231F20?style=flat-square&logo=apache-kafka)](https://kafka.apache.org/)
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python)](https://www.python.org/)
 [![google-adk](https://img.shields.io/badge/google--adk-%3E%3D2.0-4285F4?style=flat-square)](https://pypi.org/project/google-adk/)
 [![Docker](https://img.shields.io/badge/Docker-Compose%20v2-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
 
-A proof-of-concept demonstrating how **Apache Kafka can serve as a native platform for AI agents that operate Kafka itself** — three real [google-adk](https://pypi.org/project/google-adk/) agents, each free to run a different LLM provider, cooperating over Kafka topics to diagnose a broken consumer group, generate a code fix, and replay the affected messages. No human in the loop.
+A proof-of-concept demonstrating agents operating on the Kafka **control plane** — two real [google-adk](https://pypi.org/project/google-adk/) agents, each free to run a different LLM provider, diagnosing a lagging consumer group via MCP (read-only) and proposing a topic configuration fix that only gets applied after an explicit human confirmation.
 
-> Article: [Quand un agent IA diagnostique, corrige et rejoue votre Kafka — tout seul](https://kafblog.dolizone.com/blog/kafka-plateforme-agent-native/)
+> Article: [Quand un agent IA diagnostique votre Kafka — et qu'un second la corrige, avec votre accord](https://kafblog.dolizone.com/blog/kafka-agents-ops-loop/)
 
-This is the second PoC in the series. The [first PoC](https://github.com/arabaaoui/kafka-for-agents) used Kafka as **coordination infrastructure** for business agents (retail replenishment). This one flips the target: Kafka is the **thing being operated on** — the agents diagnose and repair Kafka itself. MCP stops being an auxiliary tool and becomes the primary interface; Agent Skills generate Kafka code instead of business rules; KIP-932 does enrichment replay instead of homogeneous task distribution. The first PoC's companion article: [Kafka remplace vos middlewares — une supply chain de 200 magasins pilotée par 3 agents IA](https://kafblog.dolizone.com/blog/kafka-agents-supply-chain/).
+This is the second PoC in the series. The [first PoC](https://github.com/arabaaoui/kafka-for-agents) used Kafka as **coordination infrastructure** for business agents (retail replenishment). This one flips the target: Kafka is the **thing being operated on** — the agents diagnose and correct Kafka's own configuration. MCP is the primary interface for both reads and (simulated) writes; there is no code generation and no message replay in this PoC. Companion article for PoC 1: [Kafka remplace vos middlewares — une supply chain de 200 magasins pilotée par 3 agents IA](https://kafblog.dolizone.com/blog/kafka-agents-supply-chain/).
 
 ---
 
-## Use Case: Diagnose → Remediate → Replay
+## Use Case: Diagnose → Propose → Confirm → Execute
 
-A legacy producer has a bug: some invoices published to the `facturation` topic are missing their `siret` (French company registration number). The `facturation` consumer group starts falling behind because downstream processing chokes on the malformed records. Nobody has time to babysit Kafka — so three agents handle it end to end.
+A month-end billing run pushes the `factures` topic to a heavy write rate. The `facturation` consumer group falls behind — 1452 messages of lag. Nobody has time to open three dashboards to figure out why, so two agents handle the diagnosis and the fix, with a human confirming the one step that actually changes the cluster.
 
 ### Business Flow
 
 ```mermaid
-flowchart TB
-    BUG["Legacy producer bug 50 of 550 invoices siret null"]
+flowchart TD
+    LAG[Consumer group facturation falls behind on topic factures]
+    DIAG[Diagnostic agent queries lag messages and topic config via MCP]
+    CAUSE[Root cause compression type left at default producer]
+    PROPOSE[Remediation agent proposes compression type lz4]
+    CONFIRM[Operator confirms]
+    EXECUTE[Remediation agent executes the simulated config change]
 
-    BUG --> LAG["Consumer group facturation falls behind"]
-
-    LAG --> DIAG["DIAGNOSTIC MCP get consumer lag and read messages cause siret null 50 messages affected"]
-
-    DIAG --> REM["REMEDIATION SKILL.md kafka streams filter generates a Kafka Streams filter topology"]
-
-    REM --> REPLAY["REPLAY KIP 932 share group x3 enrich message then publish corrected"]
-
-    REPLAY --> FIXED["facturation corrige enriched invoices"]
-    REPLAY --> DLQ["facturation dead letter unrecoverable after 3 attempts"]
+    LAG --> DIAG
+    DIAG --> CAUSE
+    CAUSE --> PROPOSE
+    PROPOSE --> CONFIRM
+    CONFIRM --> EXECUTE
 ```
 
-### Functional Walkthrough
+### Functional Walkthrough — Diagnostic
 
 ```mermaid
 sequenceDiagram
-    participant PI as Problem Injector
-    participant D as Diagnostic
+    actor U as Operator
+    participant D as Diagnostic Agent
     participant M as MCP Confluent
-    participant R as Remediation
-    participant P as Replay x3
+    participant K as Kafka local
 
-    PI->>PI: seed 500 valid and 50 invalid invoices
-    PI->>D: facturation topic ready
-    D->>M: get consumer lag facturation
-    M-->>D: lag detected
-    D->>M: read messages facturation
-    M-->>D: sampled messages
-    D->>D: pattern match siret null
-    D->>R: incident siret null 50 messages
-    R->>R: apply SKILL.md kafka streams filter
-    R->>R: generate Kafka Streams filter and DLT
-    R->>P: replay task for facturation
-    loop each faulty message up to 3 attempts
-        P->>P: enrich message 80% success
-        alt enriched
-            P->>P: publish to facturation corrige
-        else 3 failed attempts
-            P->>P: dead letter to facturation dead letter
-        end
-    end
+    U->>D: why does facturation have lag
+    D->>M: get consumer group lag facturation
+    M->>K: AdminClient listConsumerGroupOffsets
+    K-->>M: lag detected on factures
+    M-->>D: lag data
+    D->>M: consume messages factures
+    M->>K: fetch recent messages
+    K-->>M: sampled payloads
+    M-->>D: payloads normal no content anomaly
+    D->>D: get topic config factures simulated
+    D-->>U: cause factures never resized compression type producer
+```
+
+### Functional Walkthrough — Remediation
+
+```mermaid
+sequenceDiagram
+    actor U as Operator
+    participant R as Remediation Agent
+    participant K as Kafka local
+
+    U->>R: incident published on incidents
+    R->>R: get topic config factures simulated
+    R-->>U: proposal compression type producer to lz4 confirm
+    U-->>R: confirmation on remediation confirmations
+    R->>R: execute change simulated alter topic config
+    R-->>U: compression type lz4 applied simulated
 ```
 
 **Key facts:**
-1. The `problem-injector` seeds `facturation` with 500 valid + 50 invalid (siret=null) invoices, then exits.
-2. The **Diagnostic Agent** queries Kafka through MCP Confluent — no custom API layer — to find the lag and sample the offending messages.
-3. The **Remediation Agent** applies [`SKILL.md`](skills/kafka-streams-filter/SKILL.md) to generate a Kafka Streams `filter()` topology that isolates bad records into a dead-letter topic, logs it to `audit`, and schedules a replay task.
-4. The **Replay Agent** (×3 replicas, KIP-932 share group) consumes `replay-tasks` cooperatively, tries to recover each missing `siret` (simulated 80% success rate, up to 3 attempts), and republishes corrected invoices to `facturation-corrige` — anything still broken after 3 attempts goes to `facturation-dead-letter`.
+1. The `problem-injector` produces a burst of invoice messages into `factures` and has the `facturation` consumer group commit only part of them, deliberately leaving a lag of 1452 messages — then exits.
+2. The **Diagnostic Agent** queries Kafka through MCP Confluent (`get_consumer_lag`, `read_messages`, real calls) to confirm the lag and rule out a content problem, then inspects the topic's configuration (`get_topic_config`, simulated) and publishes a structured diagnostic to `incidents`.
+3. The **Remediation Agent** reads `incidents`, re-reads the topic config, and *proposes* changing `compression.type` from `producer` to `lz4` — logged and published to `audit` as `pending_confirmation`. It does not execute anything yet.
+4. An operator confirms (or cancels) via a message on `remediation-confirmations`, consumed through a native KIP-932 `ShareConsumer` so a confirmation is acted on exactly once, even if the agent crashes mid-flight. Only on `confirm: true` does the agent *execute* the change — logged as `SIMULATED: alter-topic-config(...)`, since the real MCP tool requires a Confluent Cloud endpoint unavailable on this local cluster.
 
 ---
 
@@ -78,44 +85,39 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    A[Problem Injector]
-    B[Kafka topic facturation]
-    C[MCP Confluent]
-    D[Diagnostic Agent]
-    E[Kafka topic incidents]
-    F[Remediation Agent]
-    G[Kafka topic audit]
-    H[Kafka topic replay tasks]
-    I[Replay Agent x3]
-    J[Kafka topic facturation corrigee]
-    K[Kafka topic facturation dead letter]
-    L[Kafka UI]
+    PI[Problem Injector]
+    K[Kafka topic factures]
+    MCP[MCP Confluent]
+    DIAG[Diagnostic Agent]
+    INC[Kafka topic incidents]
+    REM[Remediation Agent]
+    OP[Operator]
+    CONF[Kafka topic remediation confirmations]
+    AUD[Kafka topic audit]
+    UI[Kafka UI]
 
-    A --> B
-    B --> C
-    C --> D
-    D --> E
-    E --> F
-    F --> G
-    F --> H
-    H --> I
-    I --> J
-    I --> K
-    B --> L
+    PI --> K
+    K --> MCP
+    MCP --> DIAG
+    DIAG --> INC
+    INC --> REM
+    REM --> AUD
+    OP --> CONF
+    CONF --> REM
+    K --> UI
 ```
 
 **Pipeline flow:**
 
-1. **Problem Injector** → one-shot script, seeds `facturation` with 500 valid + 50 invalid (`siret=null`) invoices, then exits.
-2. **Diagnostic Agent** → queries `get_consumer_lag` and `read_messages` via MCP Confluent, pattern-matches the faulty field, and publishes a structured diagnostic to `incidents` via its own `diagnose` tool.
-3. **Remediation Agent** → reads `incidents`, applies the `SKILL.md` kafka-streams-filter procedure (injected into its instruction at startup), generates the Kafka Streams filter code, logs it to `audit`, and schedules a `replay-tasks` entry.
-4. **Replay Agent ×3** → cooperative consumption of `replay-tasks` via KIP-932 Share Groups; enriches and republishes each faulty message, or dead-letters it after 3 failed attempts.
+1. **Problem Injector** → one-shot script, produces the billing spike on `factures` and manufactures 1452 messages of lag on the `facturation` consumer group, then exits.
+2. **Diagnostic Agent** → real MCP calls (`get_consumer_lag`, `read_messages`) plus a simulated `get_topic_config`, reasons over the results with its `diagnose` tool, and publishes the incident to `incidents`.
+3. **Remediation Agent** → two phases driven by two different channels: *propose* on `incidents` (regular consumer group), *execute* on `remediation-confirmations` (KIP-932 share group). `execute_change` refuses to run unless a matching proposal is pending — the confirmation gate is enforced in code, not only in the prompt.
 
 ---
 
 ## Real ADK agents, one LLM provider per agent
 
-Every agent (`diagnostic`, `remediation`, and `replay`) is a real `google.adk.Agent` run through a `google.adk.Runner` — never a hand-rolled HTTP call to a provider API. [`agents/common/adk_factory.py`](agents/common/adk_factory.py) builds the model for any of the three agents from **three independent env var blocks**, so each agent can use a different provider and model:
+Both agents (`diagnostic`, `remediation`) are real `google.adk.Agent` instances run through a `google.adk.Runner` — never a hand-rolled HTTP call to a provider API. [`agents/common/adk_factory.py`](agents/common/adk_factory.py) builds the model for either agent from **two independent env var blocks**, so each agent can use a different provider and model:
 
 ```python
 def create_llm(provider: str, model: str, api_key: str):
@@ -128,7 +130,7 @@ def create_llm(provider: str, model: str, api_key: str):
     raise ValueError(f"Unknown LLM provider: {provider}")
 ```
 
-All three providers are routed through [LiteLLM](https://docs.litellm.ai/) — there's no provider-specific SDK wiring, no separate `AnthropicLlm`/`Claude` branch, and no OpenAI-only payload assumption baked into the code. **Zero `httpx.post()` calls to an LLM API anywhere in this repo.**
+Both providers are routed through [LiteLLM](https://docs.litellm.ai/) — there's no provider-specific SDK wiring, no separate `AnthropicLlm`/`Claude` branch, and no OpenAI-only payload assumption baked into the code. **Zero `httpx.post()` calls to an LLM API anywhere in this repo** (MCP calls are plain JSON-RPC over HTTP, not LLM calls).
 
 ```env
 # Diagnostic Agent — OPTIONAL
@@ -140,52 +142,30 @@ DIAGNOSTIC_LLM_API_KEY=          # empty = deterministic, no LLM call at all
 REMEDIATION_LLM_PROVIDER=anthropic
 REMEDIATION_LLM_MODEL=claude-sonnet-4-20250514
 REMEDIATION_LLM_API_KEY=         # empty = deterministic, no LLM call at all
-
-# Replay Agent — OPTIONAL
-REPLAY_LLM_PROVIDER=gemini
-REPLAY_LLM_MODEL=gemini-2.5-pro
-REPLAY_LLM_API_KEY=              # empty = deterministic, no LLM call at all
 ```
 
-**All three agents are runnable with zero LLM keys.** Each one follows the same principle: if its `*_LLM_API_KEY` is empty, no `AdkAgentRunner` is ever instantiated — the agent falls back to a fixed, deterministic path instead of calling out to a provider:
+**Both agents are runnable with zero LLM keys.** If an agent's `*_LLM_API_KEY` is empty, no `AdkAgentRunner` is ever instantiated — the agent falls back to a fixed, deterministic path:
 
-- **Diagnostic without a key**: deterministic pattern-matching on the sampled messages (`siret is null`) still identifies the root cause and publishes the incident.
-- **Remediation without a key**: the Kafka Streams filter is generated from a fixed template that mirrors the `SKILL.md` procedure exactly (topology, Serde, dead-letter branch, unit test skeleton).
-- **Replay without a key**: fully deterministic enrichment — simulated 80% success rate (`ENRICHMENT_SUCCESS_RATE`), no LLM reasoning per message.
+- **Diagnostic without a key**: deterministic analysis of the topic config (`compression.type == "producer"`) still identifies the root cause and publishes the incident.
+- **Remediation without a key**: the proposal and the execution both go through fixed logic that reads `recommended_config` from the incident — same outcome, no LLM reasoning.
 
-This keeps the demo runnable end-to-end without paying for any LLM provider, and you can enable qualification/reasoning selectively per agent by setting only the keys you want.
+This keeps the demo runnable end-to-end without paying for any LLM provider, and you can enable reasoning selectively per agent by setting only the keys you want.
 
 ---
 
-## The 3 Pillars
+## The 2 Pillars
 
-### 1. MCP Confluent — LLMs Query Kafka Natively
+### 1. MCP Confluent — Real Reads, Simulated Writes
 
-The [MCP Confluent](https://github.com/confluentinc/mcp-confluent) bridge exposes Kafka as a tool that LLMs can call directly (`consume-messages`, `list-topics`, `get-topic-config`, `get-consumer-group-lag`). The Diagnostic Agent calls it through its `get_consumer_lag` / `read_messages` ADK tools — no custom API layer, the agent talks the same Kafka protocol as everything else. This is the primary interface for this PoC, not an auxiliary one: the agent's whole job is to interrogate Kafka about itself.
+The [MCP Confluent](https://github.com/confluentinc/mcp-confluent) bridge exposes Kafka as a tool LLMs can call directly. Against a local `bootstrap_servers` connection, only a subset of tools is real: `consume-messages`, `list-topics`, `get-consumer-group-lag`, and friends. `get-topic-config` and `alter-topic-config` only activate behind an authenticated `kafka.rest_endpoint` — in practice, a Confluent Cloud cluster.
 
-### 2. Agent Skills — Kafka Code Generation via SKILL.md
+This PoC respects that boundary instead of hiding it: `get_consumer_lag` and `read_messages` (Diagnostic Agent) are real MCP calls against the local Kafka. `get_topic_config` (both agents) and `execute_change`/`alter-topic-config` (Remediation Agent) are **simulated** in [`agents/common/simulated_control_plane.py`](agents/common/simulated_control_plane.py) — every simulated call is logged explicitly (`SIMULATED: alter-topic-config(...)`) so it's never mistaken for a real broker write.
 
-The Remediation Agent's behavior is driven by a plain-text [`SKILL.md`](skills/kafka-streams-filter/SKILL.md) file — a declarative, 6-step specification for generating a Kafka Streams `filter()` topology, read **once at startup** and injected straight into the ADK agent's `instruction`:
+### 2. KIP-932 Share Groups — A Safe Confirmation Channel
 
-- Identify the problematic field and filtering condition
-- Build the `filter()`/`branch()` topology
-- Configure the right Serde (String, Avro, JSON)
-- Add dead-letter error handling
-- Generate a local test docker-compose
-- Validate with a `TopologyTestDriver` unit test
+The Remediation Agent consumes `remediation-confirmations` using a native KIP-932 `ShareConsumer` ([`share_group_client.py`](agents/common/share_group_client.py), same wrapper as PoC 1, now backed by `confluent-kafka`'s native `ShareConsumer` instead of an application-level emulation). A human confirmation is a control-plane decision worth not losing: with explicit acknowledgement, a confirmation is only considered handled once the agent has actually acted on it, and gets redelivered automatically if the agent crashes mid-execution instead of silently vanishing.
 
-Unlike PoC 1's `SKILL.md` (business rules for supply chain), this skill generates **Kafka infrastructure code** — the agent is repairing the platform it runs on.
-
-### 3. KIP-932 Share Groups — Cooperative Replay with Enrichment
-
-Replay agents consume the `replay-tasks` topic using [KIP-932](https://cwiki.apache.org/confluence/display/KAFKA/KIP-932%3A+Queues+for+Kafka) share group semantics. [`share_group_client.py`](agents/common/share_group_client.py) (same emulator as PoC 1) wraps a standard `Consumer` with an application-layer emulation of the KIP-932 state machine — per-message locks, ACK/RENEW/RELEASE lifecycle, lock expiry, and dead-letter after max delivery attempts.
-
-Unlike PoC 1, where share groups distributed **homogeneous** execution tasks, here each task carries a **batch of faulty messages to enrich** — the replay agent reads the source `facturation` topic, attempts enrichment per message (up to 3 tries), and routes each one to either `facturation-corrige` or `facturation-dead-letter` before acknowledging the task itself.
-
-- **Cooperative consumption**: 3 replay-agent replicas share the `replay-group`, each task delivered to exactly one.
-- **ACK-based delivery**: a task is only marked complete when the agent calls `acknowledge(ACK)`.
-- **Auto-reassignment**: if a replica crashes mid-task, the lock expires (30s default) and the task becomes `AVAILABLE` again for another replica.
-- **Linear scalability**: `docker compose -f docker-compose.app.yml up -d --scale replay-agent=5` — see [`scripts/demo-replay.sh`](scripts/demo-replay.sh).
+Unlike PoC 1, where share groups distributed **homogeneous execution tasks** across replicas, here the share group protects a **single, high-stakes decision channel** — the gate between "the agent proposed a change" and "the agent wrote to the cluster."
 
 ---
 
@@ -194,7 +174,7 @@ Unlike PoC 1, where share groups distributed **homogeneous** execution tasks, he
 ### Prerequisites
 
 - Docker & Docker Compose v2
-- LLM API keys are optional for all three agents — leave any `*_LLM_API_KEY` empty to run that agent on its deterministic fallback instead
+- LLM API keys are optional for both agents — leave any `*_LLM_API_KEY` empty to run that agent on its deterministic fallback instead
 
 ### Setup
 
@@ -206,8 +186,8 @@ cd kafka-ops-agents
 # 2. Create your environment file
 cp .env.example .env
 
-# 3. Edit .env — set any/all of DIAGNOSTIC_LLM_API_KEY, REMEDIATION_LLM_API_KEY,
-#    REPLAY_LLM_API_KEY (all optional; empty = deterministic fallback)
+# 3. Edit .env — set DIAGNOSTIC_LLM_API_KEY and/or REMEDIATION_LLM_API_KEY
+#    (both optional; empty = deterministic fallback)
 vim .env
 
 # 4. Start the test Kafka cluster + app services
@@ -219,9 +199,7 @@ Visit [Kafka UI](http://localhost:8081) to explore topics and messages in real t
 
 ---
 
-## Demo Scripts
-
-### Demo — Diagnostic → Remediation → Replay
+## Demo Script
 
 ```bash
 make demo-diag
@@ -229,17 +207,21 @@ make demo-diag
 ./scripts/demo-diag.sh
 ```
 
-Starts the test stack, seeds the `facturation` problem scenario, launches all three agents (replay scaled ×3), and prints the diagnostic, the generated filter, and the replay outcome.
+Starts the test stack, injects the billing-spike lag scenario, launches both agents, and prints the diagnostic and the pending proposal. The demo then stops and waits — remediation does not execute on its own.
 
-### Demo — Replay Scaling (bonus)
+Confirm it explicitly:
 
 ```bash
-make demo-replay
+make confirm
 # or directly:
-./scripts/demo-replay.sh
+./scripts/confirm-remediation.sh
 ```
 
-Scales `replay-agent` from 3 to 5 replicas and watches cooperative consumption of `replay-tasks` across all of them (KIP-932 Share Groups).
+This finds the latest pending proposal on `audit` and produces a confirmation message to `remediation-confirmations`. Watch it get applied:
+
+```bash
+docker compose -f docker-compose.app.yml logs -f remediation-agent
+```
 
 ---
 
@@ -249,8 +231,8 @@ For local development, the stack is split into two independent Compose files sha
 
 | File | Contains | Kafka port |
 |------|----------|------------|
-| `docker-compose.test.yml` | Standalone Kafka 4.2.1 (KRaft, 1 broker) + topic init (`facturation`, `facturation-corrige`, `alerts`, `incidents`, `replay-tasks`, `audit`) + Kafka UI (`:8081`) + `kcat` one-shot topic summary | `9093` |
-| `docker-compose.app.yml` | `mcp-confluent`, `problem-injector`, `diagnostic-agent`, `remediation-agent`, `replay-agent` ×3 (no Kafka) | — (connects to `kafka:9093`) |
+| `docker-compose.test.yml` | Standalone Kafka 4.2.x (KRaft, 1 broker, KIP-932 enabled) + topic init (`factures`, `alerts`, `incidents`, `remediation-confirmations`, `audit`) + Kafka UI (`:8081`) + `kcat` one-shot topic summary | `9093` |
+| `docker-compose.app.yml` | `mcp-confluent`, `problem-injector`, `diagnostic-agent`, `remediation-agent` (no Kafka) | — (connects to `kafka:9093`) |
 
 Both files attach to a shared external network, `kafka-ops-agents-test`, so the app services resolve the test broker by its service name (`kafka`).
 
@@ -260,11 +242,11 @@ Both files attach to a shared external network, `kafka-ops-agents-test`, so the 
 make test-stack    # start the standalone test Kafka cluster (port 9093)
 make app           # start the app services against the test cluster
 make all           # test-stack + app in one go
-make demo-diag     # full diagnostic → remediation → replay demo
-make demo-replay   # replay scaling demo (bonus)
+make demo-diag     # diagnostic + pending remediation proposal demo
+make confirm       # confirm the latest pending remediation proposal
 make logs          # follow app service logs
 make logs-test     # follow Kafka test cluster logs
-make check         # pipeline health: consumer groups, message counts, recent incidents/replay results
+make check         # pipeline health: consumer groups, message counts, recent activity
 make monitor       # follow app agent logs + Kafka UI logs together
 make topics        # show topic/partition state via docker exec
 make local-test    # run the local Python deterministic-flow test, no Docker/LLM required
@@ -279,8 +261,8 @@ make clean-all     # clean + remove the shared kafka-ops-agents-test network
 Kafka UI (`http://localhost:8081`) gives you real-time visibility into topics, messages, and consumer groups. For command-line checks:
 
 ```bash
-make check     # consumer groups state, message counts per topic, recent incidents/replay results
-make logs      # live agent output: [DIAGNOSTIC], [REMEDIATION], [REPLAY]
+make check     # consumer groups state, message counts per topic, recent proposals/executions
+make logs      # live agent output: [DIAGNOSTIC], [REMEDIATION]
 make topics    # partition layout and replication for each topic
 ```
 
@@ -290,17 +272,14 @@ make topics    # partition layout and replication for each topic
 
 ```
 kafka-ops-agents/
-├── .env.example                      # Environment variable template (3 LLM blocks)
-├── docker-compose.test.yml           # Standalone test Kafka cluster (port 9093)
+├── .env.example                      # Environment variable template (2 LLM blocks)
+├── docker-compose.test.yml           # Standalone test Kafka cluster (port 9093, KIP-932 enabled)
 ├── docker-compose.app.yml            # App services only, connects to the test cluster
 ├── Makefile                          # Dev workflow targets (test-stack, app, local-test, ...)
 ├── SPEC.md                           # Full PoC specification
 ├── scripts/
-│   ├── demo-diag.sh                  # Diagnostic → Remediation → Replay demo
-│   └── demo-replay.sh                # Replay scaling demo (bonus)
-├── skills/
-│   └── kafka-streams-filter/
-│       └── SKILL.md                  # Kafka Streams filter generation (Agent Skill) — Remediation Agent
+│   ├── demo-diag.sh                  # Diagnostic + pending remediation proposal demo
+│   └── confirm-remediation.sh        # Sends a human confirmation for the latest pending proposal
 ├── mcp-confluent/
 │   ├── Dockerfile
 │   ├── package.json
@@ -308,22 +287,20 @@ kafka-ops-agents/
 ├── tests/
 │   └── test_deterministic_flow.py    # Local test of the deterministic flow, no Docker/LLM
 └── agents/
-    ├── Dockerfile.agent              # Shared image for the 3 agents + problem-injector
+    ├── Dockerfile.agent              # Shared image for both agents + problem-injector
     ├── common/
-    │   ├── config.py                 # Env-driven config, 3 LLM blocks
+    │   ├── config.py                 # Env-driven config, 2 LLM blocks
     │   ├── adk_factory.py            # LiteLLM-backed google-adk Agent factory + runner
-    │   ├── share_group_client.py     # KIP-932 emulator (ACK/RENEW/RELEASE, dead-letter)
+    │   ├── share_group_client.py     # Native KIP-932 ShareConsumer wrapper
+    │   ├── simulated_control_plane.py # SIMULATED get-topic-config / alter-topic-config
     │   └── requirements.txt
     ├── problem_injector/
-    │   └── app.py                    # One-shot seeding of the facturation problem scenario
+    │   └── app.py                    # One-shot seeding of the billing-spike lag scenario
     ├── diagnostic/
     │   ├── agent.py                  # MCP tools (get_consumer_lag, read_messages) + diagnose tool
     │   └── prompts.py
-    ├── remediation/
-    │   ├── agent.py                  # SKILL.md-driven filter generation + deploy_filter tool
-    │   └── prompts.py
-    └── replay/
-        ├── agent.py                  # ShareGroupClient consumer + enrich/publish tools
+    └── remediation/
+        ├── agent.py                  # propose_change / execute_change, gated on confirmation
         └── prompts.py
 ```
 
@@ -335,18 +312,14 @@ kafka-ops-agents/
 |----------|----------|---------|-------------|
 | `DIAGNOSTIC_LLM_PROVIDER` | No | `openai` | `openai` \| `anthropic` \| `gemini` |
 | `DIAGNOSTIC_LLM_MODEL` | No | `gpt-4o` | Model name |
-| `DIAGNOSTIC_LLM_API_KEY` | No | *(empty)* | Leave empty for deterministic diagnosis (pattern-matching on siret=null) |
+| `DIAGNOSTIC_LLM_API_KEY` | No | *(empty)* | Leave empty for deterministic diagnosis (compression.type check) |
 | `REMEDIATION_LLM_PROVIDER` | No | `anthropic` | `openai` \| `anthropic` \| `gemini` |
 | `REMEDIATION_LLM_MODEL` | No | `claude-sonnet-4-20250514` | Model name |
-| `REMEDIATION_LLM_API_KEY` | No | *(empty)* | Leave empty for deterministic filter generation (template) |
-| `REPLAY_LLM_PROVIDER` | No | *(empty)* | `openai` \| `anthropic` \| `gemini` |
-| `REPLAY_LLM_MODEL` | No | *(empty)* | Model name |
-| `REPLAY_LLM_API_KEY` | No | *(empty)* | Leave empty for deterministic enrichment (simulated 80% success) |
+| `REMEDIATION_LLM_API_KEY` | No | *(empty)* | Leave empty for deterministic propose/execute |
 | `KAFKA_BOOTSTRAP_SERVERS` | No | `kafka:9092` | Kafka broker address |
 | `MCP_CONFLUENT_URL` | No | `http://mcp-confluent:3000` | MCP Confluent HTTP endpoint |
-| `SHARE_GROUP_LOCK_DURATION_MS` | No | `30000` | KIP-932 lock duration before a task is redelivered |
-| `SHARE_GROUP_MAX_DELIVERY_ATTEMPTS` | No | `5` | Attempts before a replay task is dead-lettered |
-| `ENRICHMENT_SUCCESS_RATE` | No | `0.8` | Simulated success rate when the replay agent tries to recover a missing siret |
+| `SHARE_GROUP_LOCK_DURATION_MS` | No | `30000` | KIP-932 lock duration before a confirmation is redelivered |
+| `SHARE_GROUP_DELIVERY_COUNT_LIMIT` | No | `5` | Delivery attempts before a confirmation is dropped |
 
 ---
 
