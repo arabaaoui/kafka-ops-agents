@@ -7,8 +7,8 @@ Usage : python tests/test_deterministic_flow.py
 Ce script ne dépend d'aucun fichier .env ni d'aucun service externe (Kafka,
 MCP Confluent, providers LLM) : toutes les variables d'environnement
 nécessaires sont fixées ci-dessous, et les fonctions testées sont soit pures
-(is déterministes), soit appelées avec un producer Kafka factice
-(FakeProducer) qui n'ouvre aucune connexion réseau.
+(déterministes), soit appelées avec un producer Kafka factice (FakeProducer)
+qui n'ouvre aucune connexion réseau.
 """
 
 import json
@@ -25,20 +25,15 @@ os.environ["DIAGNOSTIC_LLM_API_KEY"] = ""
 os.environ["REMEDIATION_LLM_PROVIDER"] = "anthropic"
 os.environ["REMEDIATION_LLM_MODEL"] = "claude-sonnet-4-20250514"
 os.environ["REMEDIATION_LLM_API_KEY"] = ""
-os.environ["REPLAY_LLM_PROVIDER"] = ""
-os.environ["REPLAY_LLM_MODEL"] = ""
-os.environ["REPLAY_LLM_API_KEY"] = ""
 os.environ["SHARE_GROUP_LOCK_DURATION_MS"] = "30000"
-os.environ["SHARE_GROUP_MAX_DELIVERY_ATTEMPTS"] = "5"
-os.environ["ENRICHMENT_SUCCESS_RATE"] = "0.8"
+os.environ["SHARE_GROUP_DELIVERY_COUNT_LIMIT"] = "5"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENTS_DIR = REPO_ROOT / "agents"
-os.environ["SKILL_PATH"] = str(REPO_ROOT / "skills" / "kafka-streams-filter" / "SKILL.md")
 
 # Les modules testés vivent sous agents/ (common, problem_injector, diagnostic,
-# remediation, replay) et s'importent comme en production (PYTHONPATH=/app
-# dans le Dockerfile).
+# remediation) et s'importent comme en production (PYTHONPATH=/app dans le
+# Dockerfile).
 sys.path.insert(0, str(AGENTS_DIR))
 
 RESULTS: list[tuple[str, bool]] = []
@@ -69,13 +64,12 @@ def test_imports() -> bool:
         "common.config",
         "common.share_group_client",
         "common.adk_factory",
+        "common.simulated_control_plane",
         "problem_injector.app",
         "diagnostic.agent",
         "diagnostic.prompts",
         "remediation.agent",
         "remediation.prompts",
-        "replay.agent",
-        "replay.prompts",
     ]
     ok = True
     for mod_name in modules:
@@ -103,9 +97,9 @@ def test_config() -> bool:
     for attr in (
         "DIAGNOSTIC_LLM_PROVIDER", "DIAGNOSTIC_LLM_MODEL", "DIAGNOSTIC_LLM_API_KEY",
         "REMEDIATION_LLM_PROVIDER", "REMEDIATION_LLM_MODEL", "REMEDIATION_LLM_API_KEY",
-        "REPLAY_LLM_PROVIDER", "REPLAY_LLM_MODEL", "REPLAY_LLM_API_KEY",
-        "TOPIC_FACTURATION", "TOPIC_FACTURATION_CORRIGE", "TOPIC_FACTURATION_DEAD_LETTER",
-        "TOPIC_ALERTS", "TOPIC_INCIDENTS", "TOPIC_REPLAY_TASKS", "TOPIC_AUDIT",
+        "TOPIC_FACTURES", "TOPIC_ALERTS", "TOPIC_INCIDENTS",
+        "TOPIC_REMEDIATION_CONFIRMATIONS", "TOPIC_AUDIT",
+        "FACTURATION_CONSUMER_GROUP", "TARGET_LAG",
     ):
         ok &= check(f"config.{attr} défini", hasattr(config, attr))
 
@@ -114,11 +108,10 @@ def test_config() -> bool:
           f"api_key={'(vide)' if not config.DIAGNOSTIC_LLM_API_KEY else '***'}")
     print(f"    REMEDIATION : provider={config.REMEDIATION_LLM_PROVIDER} model={config.REMEDIATION_LLM_MODEL} "
           f"api_key={'(vide)' if not config.REMEDIATION_LLM_API_KEY else '***'}")
-    print(f"    REPLAY      : provider={config.REPLAY_LLM_PROVIDER or '(aucun)'} model={config.REPLAY_LLM_MODEL or '(aucun)'} "
-          f"api_key={'(vide)' if not config.REPLAY_LLM_API_KEY else '***'}")
     print(f"    KAFKA_BOOTSTRAP_SERVERS={config.KAFKA_BOOTSTRAP_SERVERS}")
-    print(f"    Topics: {config.TOPIC_FACTURATION}, {config.TOPIC_FACTURATION_CORRIGE}, "
-          f"{config.TOPIC_ALERTS}, {config.TOPIC_INCIDENTS}, {config.TOPIC_REPLAY_TASKS}, {config.TOPIC_AUDIT}")
+    print(f"    Topics: {config.TOPIC_FACTURES}, {config.TOPIC_ALERTS}, {config.TOPIC_INCIDENTS}, "
+          f"{config.TOPIC_REMEDIATION_CONFIRMATIONS}, {config.TOPIC_AUDIT}")
+    print(f"    TARGET_LAG={config.TARGET_LAG}")
 
     return ok
 
@@ -130,8 +123,11 @@ def test_config() -> bool:
 def test_prompts() -> bool:
     try:
         from diagnostic.prompts import SYSTEM_PROMPT as DIAGNOSTIC_SYSTEM_PROMPT, DIAGNOSTIC_USER_PROMPT
-        from remediation.prompts import SYSTEM_PROMPT as REMEDIATION_SYSTEM_PROMPT, REMEDIATION_USER_PROMPT
-        from replay.prompts import SYSTEM_PROMPT as REPLAY_SYSTEM_PROMPT, REPLAY_USER_PROMPT
+        from remediation.prompts import (
+            SYSTEM_PROMPT as REMEDIATION_SYSTEM_PROMPT,
+            REMEDIATION_PROPOSE_PROMPT,
+            REMEDIATION_EXECUTE_PROMPT,
+        )
     except Exception as e:
         print(f"  ❌ Impossible d'importer les prompts — {e}")
         return False
@@ -139,40 +135,37 @@ def test_prompts() -> bool:
     ok = True
     ok &= check("diagnostic.SYSTEM_PROMPT non vide", bool(DIAGNOSTIC_SYSTEM_PROMPT.strip()))
     ok &= check("remediation.SYSTEM_PROMPT non vide", bool(REMEDIATION_SYSTEM_PROMPT.strip()))
-    ok &= check("replay.SYSTEM_PROMPT non vide", bool(REPLAY_SYSTEM_PROMPT.strip()))
 
     try:
-        formatted = REMEDIATION_SYSTEM_PROMPT.format(skill_content="CONTENU SKILL DE TEST")
-        ok &= check("remediation.SYSTEM_PROMPT.format(skill_content=...) se formatte", "CONTENU SKILL DE TEST" in formatted)
-    except Exception as e:
-        ok &= check(f"remediation.SYSTEM_PROMPT.format() a levé une exception — {e}", False)
-
-    try:
-        DIAGNOSTIC_USER_PROMPT.format(consumer_group="facturation", topic="facturation")
+        DIAGNOSTIC_USER_PROMPT.format(consumer_group="facturation", topic="factures")
         ok &= check("DIAGNOSTIC_USER_PROMPT.format(...) se formatte", True)
     except Exception as e:
         ok &= check(f"DIAGNOSTIC_USER_PROMPT.format() a levé une exception — {e}", False)
 
     try:
-        REMEDIATION_USER_PROMPT.format(
-            incident_id="incident-1", consumer_group="facturation", cause="siret null",
-            messages_affected=50, timestamp="2026-08-02T00:00:00Z",
+        REMEDIATION_PROPOSE_PROMPT.format(
+            incident_id="incident-1", consumer_group="facturation", cause="compression.type=producer",
+            topic="factures", recommended_config='{"compression.type": "lz4"}',
+            config_key="compression.type", current_value="producer", new_value="lz4",
+            timestamp="2026-08-20T00:00:00Z",
         )
-        ok &= check("REMEDIATION_USER_PROMPT.format(...) se formatte", True)
+        ok &= check("REMEDIATION_PROPOSE_PROMPT.format(...) se formatte", True)
     except Exception as e:
-        ok &= check(f"REMEDIATION_USER_PROMPT.format() a levé une exception — {e}", False)
+        ok &= check(f"REMEDIATION_PROPOSE_PROMPT.format() a levé une exception — {e}", False)
 
     try:
-        REPLAY_USER_PROMPT.format(message_json='{"id": 1, "siret": null}', attempt=1)
-        ok &= check("REPLAY_USER_PROMPT.format(...) se formatte", True)
+        REMEDIATION_EXECUTE_PROMPT.format(
+            incident_id="incident-1", topic="factures", config_key="compression.type", new_value="lz4",
+        )
+        ok &= check("REMEDIATION_EXECUTE_PROMPT.format(...) se formatte", True)
     except Exception as e:
-        ok &= check(f"REPLAY_USER_PROMPT.format() a levé une exception — {e}", False)
+        ok &= check(f"REMEDIATION_EXECUTE_PROMPT.format() a levé une exception — {e}", False)
 
     return ok
 
 
 # ---------------------------------------------------------------------------
-# Test 4 — Flow déterministe (Injection → Diagnostic → Remédiation → Replay)
+# Test 4 — Flow déterministe (Injection → Diagnostic → Proposition → Exécution)
 # ---------------------------------------------------------------------------
 
 class FakeProducer:
@@ -194,49 +187,68 @@ def test_deterministic_flow() -> bool:
     try:
         from problem_injector.app import make_message
         from diagnostic.agent import build_diagnostic
-        from remediation.agent import generate_filter_code
-        import replay.agent as replay_agent
+        from remediation.agent import RemediationTools
+        from common.simulated_control_plane import get_topic_config_simulated, alter_topic_config_simulated
     except Exception as e:
         print(f"  ❌ Impossible d'importer les fonctions du flow — {e}")
         return False
 
     ok = True
 
-    # 1. Problem Injector — génération de messages valides/invalides
-    valid_msg = make_message(1, valid=True)
-    invalid_msg = make_message(2, valid=False)
-    ok &= check("make_message(valid=True) a un siret", valid_msg.get("siret") is not None)
-    ok &= check("make_message(valid=False) a siret=null", invalid_msg.get("siret") is None)
+    # 1. Problem Injector — génération de messages de facturation (pas de champ défectueux)
+    msg = make_message(1)
+    ok &= check("make_message() a un id", msg.get("id") == 1)
+    ok &= check("make_message() a un montant", isinstance(msg.get("montant"), float))
+    ok &= check("make_message() a un client_id", bool(msg.get("client_id")))
 
-    # 2. Diagnostic — pattern-matching déterministe sur un échantillon
-    sample_messages = [
-        {"value": json.dumps(make_message(i, valid=(i <= 3)))} for i in range(1, 6)
-    ]
+    # 2. Diagnostic — la cause vient de la configuration du topic, pas du contenu
     lag_data = {"state": "Stable"}
-    incident = build_diagnostic("facturation", lag_data, sample_messages)
-    ok &= check("build_diagnostic().cause == 'siret null'", incident.get("cause") == "siret null")
-    ok &= check("build_diagnostic().messages_affected == 2", incident.get("messages_affected") == 2)
-    ok &= check("build_diagnostic() a un incident_id", bool(incident.get("incident_id")))
-    ok &= check("build_diagnostic().consumer_group == 'facturation'", incident.get("consumer_group") == "facturation")
+    incident_bad_config = build_diagnostic("facturation", lag_data, {"compression.type": "producer"})
+    ok &= check(
+        "build_diagnostic() detecte compression.type=producer",
+        "retaille" in incident_bad_config.get("cause", ""),
+    )
+    ok &= check(
+        "build_diagnostic() recommande lz4",
+        incident_bad_config.get("recommended_config") == {"compression.type": "lz4"},
+    )
+    ok &= check("build_diagnostic() a un incident_id", bool(incident_bad_config.get("incident_id")))
 
-    # 3. Remediation — génération déterministe du filtre Kafka Streams
-    code = generate_filter_code(incident)
-    ok &= check("generate_filter_code() retourne du code non vide", bool(code.strip()))
-    ok &= check("generate_filter_code() référence le champ 'siret'", "siret" in code)
-    ok &= check("generate_filter_code() référence le topic 'facturation'", "facturation" in code)
+    incident_ok_config = build_diagnostic("facturation", lag_data, {"compression.type": "lz4"})
+    ok &= check(
+        "build_diagnostic() ne propose rien quand la config est déjà correcte",
+        incident_ok_config.get("recommended_config") == {},
+    )
 
-    # 4. Replay — enrichissement déterministe (random.random patché pour la reproductibilité)
-    original_random = replay_agent.random.random
-    try:
-        replay_agent.random.random = lambda: 0.0  # toujours sous le seuil -> succès garanti
-        enriched = replay_agent.deterministic_enrich({"id": 42, "siret": None, "montant": 10.0})
-        ok &= check("deterministic_enrich() succès -> siret renseigné", enriched is not None and enriched.get("siret") is not None)
+    # 3. Simulated control plane — get/alter topic config, aucun appel réseau
+    current = get_topic_config_simulated("factures")
+    ok &= check("get_topic_config_simulated() renvoie compression.type=producer", current.get("compression.type") == "producer")
 
-        replay_agent.random.random = lambda: 0.999  # toujours au-dessus du seuil -> échec garanti
-        failed = replay_agent.deterministic_enrich({"id": 43, "siret": None, "montant": 10.0})
-        ok &= check("deterministic_enrich() échec -> None", failed is None)
-    finally:
-        replay_agent.random.random = original_random
+    alter_topic_config_simulated("factures", "compression.type", "lz4")
+    updated = get_topic_config_simulated("factures")
+    ok &= check("alter_topic_config_simulated() applique le changement", updated.get("compression.type") == "lz4")
+
+    # 4. Remediation — porte de confirmation appliquée côté code
+    producer = FakeProducer()
+    tools = RemediationTools(producer)
+
+    tools.propose_change("factures", "compression.type", "producer", "lz4", incident_id="incident-1")
+    ok &= check("propose_change() enregistre une proposition en attente", "incident-1" in tools.pending)
+    ok &= check(
+        "propose_change() publie un audit pending_confirmation",
+        any(json.loads(p["value"]).get("status") == "pending_confirmation" for p in producer.produced),
+    )
+
+    refused = tools.execute_change("factures", "compression.type", "lz4", incident_id="incident-inconnu")
+    ok &= check("execute_change() refuse sans proposition en attente", refused.startswith("REFUS"))
+
+    applied = tools.execute_change("factures", "compression.type", "lz4", incident_id="incident-1")
+    ok &= check("execute_change() applique la proposition confirmée", applied.startswith("OK"))
+    ok &= check("execute_change() retire la proposition traitée", "incident-1" not in tools.pending)
+    ok &= check(
+        "execute_change() publie un audit simulated_applied",
+        any(json.loads(p["value"]).get("status") == "simulated_applied" for p in producer.produced),
+    )
 
     return ok
 
@@ -296,7 +308,7 @@ def main() -> None:
     run_test("Test 1 — Imports", test_imports)
     run_test("Test 2 — Configuration", test_config)
     run_test("Test 3 — Prompts", test_prompts)
-    run_test("Test 4 — Flow déterministe (Injection → Diagnostic → Remédiation → Replay)", test_deterministic_flow)
+    run_test("Test 4 — Flow déterministe (Injection → Diagnostic → Proposition → Exécution)", test_deterministic_flow)
     run_test("Test 5 — ADK factory (sans appel LLM)", test_adk_factory)
 
     print("\n" + "=" * 70)
