@@ -25,6 +25,13 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # KIP-932 share groups (used by remediation-agent via the native ShareConsumer,
+      # for the remediation-confirmations channel).
+      # Enabled by default from Kafka 4.2.0, set explicitly here for clarity.
+      KAFKA_GROUP_COORDINATOR_REBALANCE_PROTOCOLS: classic,consumer,share
+      KAFKA_GROUP_SHARE_ENABLE: "true"
+      KAFKA_GROUP_SHARE_RECORD_LOCK_DURATION_MS: ${SHARE_GROUP_LOCK_DURATION_MS:-30000}
+      KAFKA_GROUP_SHARE_DELIVERY_COUNT_LIMIT: ${SHARE_GROUP_DELIVERY_COUNT_LIMIT:-5}
     volumes:
       - kafka-test-data:/var/lib/kafka/data
     healthcheck:
@@ -81,11 +88,10 @@ services:
     command:
       - |
         echo "Creating test topics..."
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic facturation --partitions 1 --replication-factor 1
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic facturation-corrige --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic factures --partitions 1 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic alerts --partitions 1 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic incidents --partitions 1 --replication-factor 1
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic replay-tasks --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic remediation-confirmations --partitions 1 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --create --if-not-exists --topic audit --partitions 1 --replication-factor 1
         echo "Test topics ready."
 
