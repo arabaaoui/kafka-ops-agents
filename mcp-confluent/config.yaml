@@ -1,0 +1,25 @@
+# =============================================================================
+# Configuration for the official @confluentinc/mcp-confluent server.
+#
+# Points at the local Apache Kafka 4.2.1 KRaft broker (PLAINTEXT, no auth).
+# This is a development configuration — do NOT use in production.
+# =============================================================================
+
+server:
+  # HTTP transport only (the agents call POST /mcp via JSON-RPC).
+  transports: [http]
+  http:
+    port: 3000
+    host: "0.0.0.0"
+    mcp_endpoint: "/mcp"
+  auth:
+    # No auth for local dev — the agents call /mcp directly without a bearer
+    # token. Disable entirely so the Host-header allow-list doesn't reject
+    # requests from sibling containers (diagnostic-agent → mcp-confluent).
+    disabled: true
+
+connections:
+  local:
+    type: direct
+    kafka:
+      bootstrap_servers: "kafka:9093"
