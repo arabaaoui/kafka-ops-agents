@@ -1,4 +1,4 @@
-.PHONY: test-stack app all logs logs-test stop-app stop-test clean clean-all local-test monitor topics demo-diag confirm check
+.PHONY: test-stack app all logs logs-test stop-app stop-test clean clean-all local-test monitor topics demo-diag check
 
 local-test:
 	python tests/test_deterministic_flow.py
@@ -43,15 +43,11 @@ monitor:
 topics:
 	docker compose -f docker-compose.test.yml exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --describe
 
-# ---- Demo scripts ----
+# ---- Demo script ----
 
 demo-diag:
-	@echo "=== Demo: Diagnostic → Remédiation (avec confirmation humaine) ==="
+	@echo "=== Demo: Diagnostic (poison message → diagnostic → fix → vérification) ==="
 	./scripts/demo-diag.sh
-
-confirm:
-	@echo "=== Confirmation de la proposition de remédiation en attente ==="
-	./scripts/confirm-remediation.sh $(INCIDENT)
 
 # ---- Pipeline health check ----
 
@@ -66,13 +62,10 @@ check:
 	done
 	@echo ""
 	@echo "--- Topic Message Counts ---"
-	@for topic in factures alerts incidents remediation-confirmations audit; do \
+	@for topic in factures alerts incidents; do \
 		count=$$(docker compose -f docker-compose.test.yml exec -T kafka /opt/kafka/bin/kafka-run-class.sh kafka.tools.GetOffsetShell --bootstrap-server kafka:9093 --topic $$topic --time -1 2>/dev/null | awk -F: '{sum+=$$NF} END{print sum+0}'); \
 		echo "  $$topic: $$count messages"; \
 	done
 	@echo ""
-	@echo "--- Recent Incidents (last 10) ---"
-	@docker compose -f docker-compose.app.yml logs --tail=200 2>/dev/null | grep -i "incident produced\|diagnostic" | tail -10 || echo "  (no incidents yet)"
-	@echo ""
-	@echo "--- Recent Remediation Activity (last 10) ---"
-	@docker compose -f docker-compose.app.yml logs --tail=200 2>/dev/null | grep -E "PROPOSAL|SIMULATED|Confirmation" | tail -10 || echo "  (no remediation activity yet)"
+	@echo "--- Recent Diagnostic Activity (last 10) ---"
+	@docker compose -f docker-compose.app.yml logs --tail=200 2>/dev/null | grep -i "incident produced\|SIMULATED\|vérification" | tail -10 || echo "  (no diagnostic activity yet)"
