@@ -5,10 +5,12 @@ Test standalone de la logique métier — sans Docker, sans Kafka réel, sans ap
 Usage : python tests/test_deterministic_flow.py
 
 Ce script ne dépend d'aucun fichier .env ni d'aucun service externe (Kafka,
-MCP Confluent, providers LLM) : toutes les variables d'environnement
+MCP Confluent, provider LLM) : toutes les variables d'environnement
 nécessaires sont fixées ci-dessous, et les fonctions testées sont soit pures
 (déterministes), soit appelées avec un producer Kafka factice (FakeProducer)
-qui n'ouvre aucune connexion réseau.
+qui n'ouvre aucune connexion réseau. apply_fix_simulated()/verify_fix() ne
+sont testés que sur leur porte de refus (pas de diagnostic en attente),
+seul chemin qui n'ouvre pas de connexion Kafka réelle.
 """
 
 import json
@@ -22,18 +24,12 @@ os.environ["MCP_CONFLUENT_URL"] = "http://localhost:3000"
 os.environ["DIAGNOSTIC_LLM_PROVIDER"] = "openai"
 os.environ["DIAGNOSTIC_LLM_MODEL"] = "gpt-4o"
 os.environ["DIAGNOSTIC_LLM_API_KEY"] = ""
-os.environ["REMEDIATION_LLM_PROVIDER"] = "anthropic"
-os.environ["REMEDIATION_LLM_MODEL"] = "claude-sonnet-4-20250514"
-os.environ["REMEDIATION_LLM_API_KEY"] = ""
-os.environ["SHARE_GROUP_LOCK_DURATION_MS"] = "30000"
-os.environ["SHARE_GROUP_DELIVERY_COUNT_LIMIT"] = "5"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENTS_DIR = REPO_ROOT / "agents"
 
-# Les modules testés vivent sous agents/ (common, problem_injector, diagnostic,
-# remediation) et s'importent comme en production (PYTHONPATH=/app dans le
-# Dockerfile).
+# Les modules testés vivent sous agents/ (common, problem_injector, diagnostic)
+# et s'importent comme en production (PYTHONPATH=/app dans le Dockerfile).
 sys.path.insert(0, str(AGENTS_DIR))
 
 RESULTS: list[tuple[str, bool]] = []
@@ -62,14 +58,11 @@ def run_test(name: str, func) -> None:
 def test_imports() -> bool:
     modules = [
         "common.config",
-        "common.share_group_client",
         "common.adk_factory",
-        "common.simulated_control_plane",
+        "common.mcp_client",
         "problem_injector.app",
         "diagnostic.agent",
         "diagnostic.prompts",
-        "remediation.agent",
-        "remediation.prompts",
     ]
     ok = True
     for mod_name in modules:
@@ -96,22 +89,22 @@ def test_config() -> bool:
     ok = True
     for attr in (
         "DIAGNOSTIC_LLM_PROVIDER", "DIAGNOSTIC_LLM_MODEL", "DIAGNOSTIC_LLM_API_KEY",
-        "REMEDIATION_LLM_PROVIDER", "REMEDIATION_LLM_MODEL", "REMEDIATION_LLM_API_KEY",
+        "KAFKA_BOOTSTRAP_SERVERS", "MCP_CONFLUENT_URL",
         "TOPIC_FACTURES", "TOPIC_ALERTS", "TOPIC_INCIDENTS",
-        "TOPIC_REMEDIATION_CONFIRMATIONS", "TOPIC_AUDIT",
-        "FACTURATION_CONSUMER_GROUP", "TARGET_LAG",
+        "FACTURATION_CONSUMER_GROUP", "FACTURATION_PARTITION", "POISON_OFFSET",
+        "MESSAGES_AFTER_POISON", "DIAGNOSTIC_SCAN_COUNT",
+        "VERIFY_FIX_DELAY_S", "CATCHUP_TIMEOUT_S",
     ):
         ok &= check(f"config.{attr} défini", hasattr(config, attr))
 
     print("\n  Config détectée :")
-    print(f"    DIAGNOSTIC  : provider={config.DIAGNOSTIC_LLM_PROVIDER} model={config.DIAGNOSTIC_LLM_MODEL} "
+    print(f"    DIAGNOSTIC : provider={config.DIAGNOSTIC_LLM_PROVIDER} model={config.DIAGNOSTIC_LLM_MODEL} "
           f"api_key={'(vide)' if not config.DIAGNOSTIC_LLM_API_KEY else '***'}")
-    print(f"    REMEDIATION : provider={config.REMEDIATION_LLM_PROVIDER} model={config.REMEDIATION_LLM_MODEL} "
-          f"api_key={'(vide)' if not config.REMEDIATION_LLM_API_KEY else '***'}")
     print(f"    KAFKA_BOOTSTRAP_SERVERS={config.KAFKA_BOOTSTRAP_SERVERS}")
-    print(f"    Topics: {config.TOPIC_FACTURES}, {config.TOPIC_ALERTS}, {config.TOPIC_INCIDENTS}, "
-          f"{config.TOPIC_REMEDIATION_CONFIRMATIONS}, {config.TOPIC_AUDIT}")
-    print(f"    TARGET_LAG={config.TARGET_LAG}")
+    print(f"    MCP_CONFLUENT_URL={config.MCP_CONFLUENT_URL}")
+    print(f"    Topics: {config.TOPIC_FACTURES}, {config.TOPIC_ALERTS}, {config.TOPIC_INCIDENTS}")
+    print(f"    FACTURATION_CONSUMER_GROUP={config.FACTURATION_CONSUMER_GROUP} "
+          f"partition={config.FACTURATION_PARTITION} POISON_OFFSET={config.POISON_OFFSET}")
 
     return ok
 
@@ -122,50 +115,25 @@ def test_config() -> bool:
 
 def test_prompts() -> bool:
     try:
-        from diagnostic.prompts import SYSTEM_PROMPT as DIAGNOSTIC_SYSTEM_PROMPT, DIAGNOSTIC_USER_PROMPT
-        from remediation.prompts import (
-            SYSTEM_PROMPT as REMEDIATION_SYSTEM_PROMPT,
-            REMEDIATION_PROPOSE_PROMPT,
-            REMEDIATION_EXECUTE_PROMPT,
-        )
+        from diagnostic.prompts import SYSTEM_PROMPT, DIAGNOSTIC_USER_PROMPT
     except Exception as e:
         print(f"  ❌ Impossible d'importer les prompts — {e}")
         return False
 
     ok = True
-    ok &= check("diagnostic.SYSTEM_PROMPT non vide", bool(DIAGNOSTIC_SYSTEM_PROMPT.strip()))
-    ok &= check("remediation.SYSTEM_PROMPT non vide", bool(REMEDIATION_SYSTEM_PROMPT.strip()))
+    ok &= check("diagnostic.SYSTEM_PROMPT non vide", bool(SYSTEM_PROMPT.strip()))
 
     try:
-        DIAGNOSTIC_USER_PROMPT.format(consumer_group="facturation", topic="factures")
+        DIAGNOSTIC_USER_PROMPT.format(consumer_group="facturation", topic="factures", partition=0)
         ok &= check("DIAGNOSTIC_USER_PROMPT.format(...) se formatte", True)
     except Exception as e:
         ok &= check(f"DIAGNOSTIC_USER_PROMPT.format() a levé une exception — {e}", False)
-
-    try:
-        REMEDIATION_PROPOSE_PROMPT.format(
-            incident_id="incident-1", consumer_group="facturation", cause="compression.type=producer",
-            topic="factures", recommended_config='{"compression.type": "lz4"}',
-            config_key="compression.type", current_value="producer", new_value="lz4",
-            timestamp="2026-08-20T00:00:00Z",
-        )
-        ok &= check("REMEDIATION_PROPOSE_PROMPT.format(...) se formatte", True)
-    except Exception as e:
-        ok &= check(f"REMEDIATION_PROPOSE_PROMPT.format() a levé une exception — {e}", False)
-
-    try:
-        REMEDIATION_EXECUTE_PROMPT.format(
-            incident_id="incident-1", topic="factures", config_key="compression.type", new_value="lz4",
-        )
-        ok &= check("REMEDIATION_EXECUTE_PROMPT.format(...) se formatte", True)
-    except Exception as e:
-        ok &= check(f"REMEDIATION_EXECUTE_PROMPT.format() a levé une exception — {e}", False)
 
     return ok
 
 
 # ---------------------------------------------------------------------------
-# Test 4 — Flow déterministe (Injection → Diagnostic → Proposition → Exécution)
+# Test 4 — Flow déterministe (Injection → Diagnostic → Fix simulé → Vérification)
 # ---------------------------------------------------------------------------
 
 class FakeProducer:
@@ -185,69 +153,69 @@ class FakeProducer:
 
 def test_deterministic_flow() -> bool:
     try:
-        from problem_injector.app import make_message
-        from diagnostic.agent import build_diagnostic
-        from remediation.agent import RemediationTools
-        from common.simulated_control_plane import get_topic_config_simulated, alter_topic_config_simulated
+        from problem_injector.app import make_message, make_poison_message
+        from diagnostic.agent import build_diagnostic, DiagnosticTools, _is_broken
+        from common.mcp_client import extract_partition_lag
     except Exception as e:
         print(f"  ❌ Impossible d'importer les fonctions du flow — {e}")
         return False
 
     ok = True
 
-    # 1. Problem Injector — génération de messages de facturation (pas de champ défectueux)
+    # 1. Problem Injector — messages valides vs. poison message
     msg = make_message(1)
-    ok &= check("make_message() a un id", msg.get("id") == 1)
+    ok &= check("make_message() a un siret", bool(msg.get("siret")))
     ok &= check("make_message() a un montant", isinstance(msg.get("montant"), float))
     ok &= check("make_message() a un client_id", bool(msg.get("client_id")))
 
-    # 2. Diagnostic — la cause vient de la configuration du topic, pas du contenu
-    lag_data = {"state": "Stable"}
-    incident_bad_config = build_diagnostic("facturation", lag_data, {"compression.type": "producer"})
+    poison = make_poison_message(42)
+    ok &= check("make_poison_message() n'a pas de siret", "siret" not in poison)
+
+    # 2. _is_broken() — détection du message fautif
+    valid_wire = {"value": json.dumps(make_message(2))}
+    poison_wire = {"value": json.dumps(make_poison_message(2))}
+    malformed_wire = {"value": "not valid json"}
+    ok &= check("_is_broken() renvoie False pour un message valide", _is_broken(valid_wire) is False)
+    ok &= check("_is_broken() renvoie True pour le poison message (siret absent)", _is_broken(poison_wire) is True)
+    ok &= check("_is_broken() renvoie True pour un JSON invalide", _is_broken(malformed_wire) is True)
+
+    # 3. mcp_client.extract_partition_lag() — extraction pure d'une ligne de partition
+    lag_payload = {"topics": [{"topic": "factures", "partitions": [
+        {"partition": 0, "committedOffset": 1452, "highWatermark": 1483, "lag": 31}
+    ]}]}
+    partition_lag = extract_partition_lag(lag_payload, "factures", 0)
+    ok &= check("extract_partition_lag() retrouve la bonne partition", partition_lag.get("committedOffset") == 1452)
+
+    # 4. build_diagnostic() — cause racine + commande CLI proposée
+    lag_data = {**partition_lag, "stagnant": True}
+    incident = build_diagnostic("facturation", lag_data, [poison_wire], [valid_wire])
+    ok &= check("build_diagnostic() identifie la cause siret absent", "siret" in incident.get("cause", ""))
+    ok &= check("build_diagnostic() ne détecte pas de rafale (scan propre)", incident.get("burst") is False)
     ok &= check(
-        "build_diagnostic() detecte compression.type=producer",
-        "retaille" in incident_bad_config.get("cause", ""),
+        "build_diagnostic() propose la commande --reset-offsets",
+        "--reset-offsets" in incident.get("reset_command", "") and "--to-offset 1453" in incident["reset_command"],
     )
-    ok &= check(
-        "build_diagnostic() recommande lz4",
-        incident_bad_config.get("recommended_config") == {"compression.type": "lz4"},
-    )
-    ok &= check("build_diagnostic() a un incident_id", bool(incident_bad_config.get("incident_id")))
+    ok &= check("build_diagnostic() a une précondition (arrêter le consumer)", "Arrêter" in incident.get("precondition", ""))
+    ok &= check("build_diagnostic() a un incident_id", bool(incident.get("incident_id")))
 
-    incident_ok_config = build_diagnostic("facturation", lag_data, {"compression.type": "lz4"})
-    ok &= check(
-        "build_diagnostic() ne propose rien quand la config est déjà correcte",
-        incident_ok_config.get("recommended_config") == {},
-    )
+    incident_burst = build_diagnostic("facturation", lag_data, [poison_wire], [poison_wire])
+    ok &= check("build_diagnostic() détecte une rafale quand le scan contient aussi des messages cassés", incident_burst.get("burst") is True)
 
-    # 3. Simulated control plane — get/alter topic config, aucun appel réseau
-    current = get_topic_config_simulated("factures")
-    ok &= check("get_topic_config_simulated() renvoie compression.type=producer", current.get("compression.type") == "producer")
-
-    alter_topic_config_simulated("factures", "compression.type", "lz4")
-    updated = get_topic_config_simulated("factures")
-    ok &= check("alter_topic_config_simulated() applique le changement", updated.get("compression.type") == "lz4")
-
-    # 4. Remediation — porte de confirmation appliquée côté code
+    # 5. DiagnosticTools — porte de refus appliquée côté code (pas seulement dans le prompt)
     producer = FakeProducer()
-    tools = RemediationTools(producer)
+    tools = DiagnosticTools(producer, admin=None)
 
-    tools.propose_change("factures", "compression.type", "producer", "lz4", incident_id="incident-1")
-    ok &= check("propose_change() enregistre une proposition en attente", "incident-1" in tools.pending)
+    refused_fix = tools.apply_fix_simulated()
+    ok &= check("apply_fix_simulated() refuse sans diagnostic préalable", refused_fix.startswith("REFUS"))
+    refused_verify = tools.verify_fix()
+    ok &= check("verify_fix() refuse sans diagnostic préalable", refused_verify.startswith("REFUS"))
+
+    result = tools.diagnose(json.dumps(lag_data), json.dumps([poison_wire]), json.dumps([valid_wire]))
+    ok &= check("diagnose() confirme la publication", result.startswith("OK"))
+    ok &= check("diagnose() marque incident_produced", tools.incident_produced is True)
     ok &= check(
-        "propose_change() publie un audit pending_confirmation",
-        any(json.loads(p["value"]).get("status") == "pending_confirmation" for p in producer.produced),
-    )
-
-    refused = tools.execute_change("factures", "compression.type", "lz4", incident_id="incident-inconnu")
-    ok &= check("execute_change() refuse sans proposition en attente", refused.startswith("REFUS"))
-
-    applied = tools.execute_change("factures", "compression.type", "lz4", incident_id="incident-1")
-    ok &= check("execute_change() applique la proposition confirmée", applied.startswith("OK"))
-    ok &= check("execute_change() retire la proposition traitée", "incident-1" not in tools.pending)
-    ok &= check(
-        "execute_change() publie un audit simulated_applied",
-        any(json.loads(p["value"]).get("status") == "simulated_applied" for p in producer.produced),
+        "diagnose() publie l'incident sur 'incidents'",
+        any(json.loads(p["value"]).get("event") == "diagnostic" for p in producer.produced),
     )
 
     return ok
@@ -308,7 +276,7 @@ def main() -> None:
     run_test("Test 1 — Imports", test_imports)
     run_test("Test 2 — Configuration", test_config)
     run_test("Test 3 — Prompts", test_prompts)
-    run_test("Test 4 — Flow déterministe (Injection → Diagnostic → Proposition → Exécution)", test_deterministic_flow)
+    run_test("Test 4 — Flow déterministe (Injection → Diagnostic → Fix simulé → Vérification)", test_deterministic_flow)
     run_test("Test 5 — ADK factory (sans appel LLM)", test_adk_factory)
 
     print("\n" + "=" * 70)
