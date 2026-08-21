@@ -26,29 +26,37 @@ DIAGNOSTIC_LLM_PROVIDER = os.getenv("DIAGNOSTIC_LLM_PROVIDER", "openai")
 DIAGNOSTIC_LLM_MODEL = os.getenv("DIAGNOSTIC_LLM_MODEL", "gpt-4o")
 DIAGNOSTIC_LLM_API_KEY = os.getenv("DIAGNOSTIC_LLM_API_KEY", "")
 
-REMEDIATION_LLM_PROVIDER = os.getenv("REMEDIATION_LLM_PROVIDER", "anthropic")
-REMEDIATION_LLM_MODEL = os.getenv("REMEDIATION_LLM_MODEL", "claude-sonnet-4-20250514")
-REMEDIATION_LLM_API_KEY = os.getenv("REMEDIATION_LLM_API_KEY", "")
-
-# Share Group (KIP-932) — broker/group settings, used by the native ShareConsumer
-# for the remediation-confirmations channel. Not passed to the Python client
-# directly; read here to log them and to feed the broker config in
-# docker-compose.test.yml (group.share.record.lock.duration.ms / group.share.delivery.count.limit).
-SHARE_GROUP_LOCK_DURATION_MS = int(os.getenv("SHARE_GROUP_LOCK_DURATION_MS", "30000"))
-SHARE_GROUP_DELIVERY_COUNT_LIMIT = int(os.getenv("SHARE_GROUP_DELIVERY_COUNT_LIMIT", "5"))
-
 # Topic names
 TOPIC_FACTURES = "factures"
 TOPIC_ALERTS = "alerts"
 TOPIC_INCIDENTS = "incidents"
-TOPIC_REMEDIATION_CONFIRMATIONS = "remediation-confirmations"
-TOPIC_AUDIT = "audit"
 
-# Consumer group monitored by the diagnostic agent (deliberately lagging — see problem_injector)
+# Consumer group monitored by the diagnostic agent (stuck on a poison message — see problem_injector)
 FACTURATION_CONSUMER_GROUP = "facturation"
 
-# Lag manufactured by the problem injector, matching the article's incident (1452 messages).
-TARGET_LAG = 1452
+# 'factures' is a single partition so the offset arithmetic in the article stays exact.
+FACTURATION_PARTITION = 0
+
+# Offset of the poison message manufactured by the problem injector — the exact figure
+# from the article's incident. The message at this offset is missing its 'siret' field,
+# which crashes the (simulated) 'facturation' consumer before it commits past it.
+POISON_OFFSET = 1452
+
+# Valid messages produced after the poison offset, so the diagnostic agent can scan a
+# window past it and confirm a single isolated bad message rather than a burst.
+MESSAGES_AFTER_POISON = 30
+
+# How many messages the diagnostic agent scans past the poison offset to rule out a burst.
+DIAGNOSTIC_SCAN_COUNT = 5
+
+# Delay before re-checking the lag after the simulated manual fix, so the
+# catch-up consumer has time to drain the backlog.
+VERIFY_FIX_DELAY_S = 3
+
+# How long the simulated catch-up consumer (standing in for the operator
+# restarting the real 'facturation' service once the poison message is
+# skipped) is allowed to run before it's considered stalled.
+CATCHUP_TIMEOUT_S = 15
 
 
 def validate() -> list[str]:
@@ -56,8 +64,6 @@ def validate() -> list[str]:
     missing = []
     if not DIAGNOSTIC_LLM_API_KEY:
         missing.append("DIAGNOSTIC_LLM_API_KEY (set in .env or environment)")
-    if not REMEDIATION_LLM_API_KEY:
-        missing.append("REMEDIATION_LLM_API_KEY (set in .env or environment)")
     if not KAFKA_BOOTSTRAP_SERVERS:
         missing.append("KAFKA_BOOTSTRAP_SERVERS")
     return missing
