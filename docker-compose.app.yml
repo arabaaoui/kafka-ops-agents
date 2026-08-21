@@ -5,18 +5,23 @@ networks:
 
 services:
   # ===========================================================================
-  # MCP Confluent — Standalone MCP server exposing Kafka tools to LLMs
+  # MCP Confluent — Official @confluentinc/mcp-confluent server (HTTP on :3000)
   # ===========================================================================
   mcp-confluent:
-    build:
-      context: ./mcp-confluent
+    image: node:22-slim
     ports:
       - "3000:3000"
     networks:
       - kafka-ops-agents-test
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
-      MCP_PORT: "3000"
+    volumes:
+      - ./mcp-confluent/config.yaml:/etc/mcp/config.yaml:ro
+    command: ["npx", "-y", "@confluentinc/mcp-confluent", "--config", "/etc/mcp/config.yaml"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get({port:3000,host:'localhost',timeout:2000},r=>{r.resume();process.exit(0)}).on('error',()=>process.exit(1)).on('timeout',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # ===========================================================================
   # Problem Injector — One-shot seeding of the month-end billing lag scenario
@@ -32,7 +37,8 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
 
   # ===========================================================================
-  # Agent 1 — Diagnostic (ADK + MCP Confluent read-only tools)
+  # Diagnostic Agent — the only agent: diagnoses via MCP Confluent (read-only),
+  # then applies and verifies a simulated fix in the same loop.
   # ===========================================================================
   diagnostic-agent:
     build:
@@ -49,24 +55,5 @@ services:
       DIAGNOSTIC_LLM_API_KEY: ${DIAGNOSTIC_LLM_API_KEY}
     depends_on:
       mcp-confluent:
-        condition: service_started
-    restart: unless-stopped
-
-  # ===========================================================================
-  # Agent 2 — Remediation (ADK, propose then execute after human confirmation)
-  # ===========================================================================
-  remediation-agent:
-    build:
-      context: ./agents
-      dockerfile: Dockerfile.agent
-    command: python -m remediation.agent
-    networks:
-      - kafka-ops-agents-test
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
-      SHARE_GROUP_LOCK_DURATION_MS: ${SHARE_GROUP_LOCK_DURATION_MS:-30000}
-      SHARE_GROUP_DELIVERY_COUNT_LIMIT: ${SHARE_GROUP_DELIVERY_COUNT_LIMIT:-5}
-      REMEDIATION_LLM_PROVIDER: ${REMEDIATION_LLM_PROVIDER:-anthropic}
-      REMEDIATION_LLM_MODEL: ${REMEDIATION_LLM_MODEL:-claude-sonnet-4}
-      REMEDIATION_LLM_API_KEY: ${REMEDIATION_LLM_API_KEY}
+        condition: service_healthy
     restart: unless-stopped
