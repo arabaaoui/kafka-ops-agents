@@ -15,7 +15,6 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 COPY common/ /app/common/
 COPY problem_injector/ /app/problem_injector/
 COPY diagnostic/ /app/diagnostic/
-COPY remediation/ /app/remediation/
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
